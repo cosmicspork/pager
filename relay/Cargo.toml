@@ -1,0 +1,24 @@
+[package]
+name = "pager-relay"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "pager-relay"
+path = "src/main.rs"
+
+[dependencies]
+pager-proto = { path = "../proto" }
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+parking_lot = "0.12"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+web-push = "0.11"
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+anyhow = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["proto", "relay", "bridge", "wasm"]
+# The wasm crate only builds for wasm32 (via wasm-pack); keep it out of host
+# `cargo build`/`test`, which would compile a useless host cdylib.
+default-members = ["proto", "relay", "bridge"]
+
+[workspace.dependencies]
+# The trust contract (envelope + keys + relay auth). Pinned to a public rev so
+# the relay's Docker build and anyone cloning pager resolve the exact bytes
+# without local path coupling. svastha-core is AGPL-3.0-only, so pager is too.
+svastha-core = { git = "https://github.com/cosmicspork/svastha", rev = "a773b41a81dc388bac1d9e910dee7268fbff61d4" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+hex = "0.4"
+anyhow = "1"

@@ -1,0 +1,17 @@
+[package]
+name = "pager-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Device-side WASM for pager: X25519 device identity, enrollment sealing, and notification decrypt — over pager-proto/svastha-core."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pager-proto = { path = "../proto" }
+svastha-core = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"

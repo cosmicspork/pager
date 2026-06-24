@@ -1,0 +1,11 @@
+target/
+pwa/wasm/
+vapid.json
+*.pem
+.env
+.env.*
+secrets/
+.git/
+node_modules/
+spike/
+*.log

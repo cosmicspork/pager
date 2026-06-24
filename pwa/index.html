@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Pager</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#0b0f14" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; min-height: 100dvh; display: grid; place-content: center; gap: 1rem;
+      font: 16px/1.5 -apple-system, system-ui, sans-serif; background: #0b0f14; color: #e6edf3;
+      text-align: center; padding: 2rem; max-width: 28rem; margin-inline: auto; }
+    h1 { margin: 0; font-size: 1.4rem; letter-spacing: .02em; }
+    p { color: #8b949e; margin: .25rem 0; }
+    button { font: inherit; padding: .8rem 1.2rem; border-radius: .6rem; border: 1px solid #2b3440;
+      background: #161b22; color: #e6edf3; cursor: pointer; }
+    button.primary { background: #1f6feb; border-color: #1f6feb; }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: .5; }
+    textarea { width: 100%; box-sizing: border-box; font: 13px/1.4 ui-monospace, monospace;
+      background: #0d1117; color: #e6edf3; border: 1px solid #2b3440; border-radius: .5rem; padding: .6rem;
+      min-height: 4.5rem; resize: vertical; }
+    #status { color: #8b949e; min-height: 1.5em; }
+    .hidden { display: none; }
+    code { color: #58a6ff; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1>Pager</h1>
+
+  <!-- Safari landing from the QR: hand the pairing code to the installed app. -->
+  <section id="copy" class="hidden">
+    <p>Pairing code captured. To finish:</p>
+    <p>1. Tap <b>Copy code</b> below.<br>2. Open the <b>Pager</b> app from your Home Screen.<br>3. Tap <b>Paste &amp; pair</b>.</p>
+    <button id="copyBtn" class="primary">Copy code</button>
+    <p id="copyMsg"></p>
+    <p style="font-size:.8rem">Not installed yet? In Safari: Share → <b>Add to Home Screen</b> first.</p>
+  </section>
+
+  <!-- Installed app / root: pair, or show paired state. -->
+  <section id="app" class="hidden">
+    <div id="pairing">
+      <p>Pair this device to start receiving your work pings.</p>
+      <textarea id="code" placeholder="Paste pairing code…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+      <div style="display:flex; gap:.5rem; justify-content:center; margin-top:.6rem">
+        <button id="pasteBtn">Paste</button>
+        <button id="pairBtn" class="primary">Paste &amp; pair</button>
+      </div>
+    </div>
+    <div id="paired" class="hidden">
+      <p>✓ Paired. Notifications will appear here when you're away.</p>
+      <p style="font-size:.8rem">Device <code id="devId"></code></p>
+      <button id="repairBtn">Re-pair</button>
+    </div>
+  </section>
+
+  <div id="status">…</div>
+
+  <script src="/wasm/pager_wasm.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

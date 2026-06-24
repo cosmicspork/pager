@@ -1,0 +1,19 @@
+[package]
+name = "pager-proto"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Pager wire contract: sealed-blob framing, relay-auth headers, and the device/notify JSON shapes shared by the relay, bridge, and device WASM."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+svastha-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+# Same major as svastha-core so the PublicKey type unifies and `wrap_key` accepts it.
+x25519-dalek = "2"
+thiserror = "2"
