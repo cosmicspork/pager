@@ -12,7 +12,7 @@ mod client;
 mod store;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,6 +57,8 @@ enum Cmd {
     Unpair { id: String },
     /// Print this bridge's public keys (for the relay's PAGER_BRIDGE_PUBKEY).
     Id,
+    /// Check the relay is reachable and accepts this bridge's authentication.
+    Ping,
 }
 
 struct Config {
@@ -97,6 +99,7 @@ async fn main() -> Result<()> {
         Cmd::Pair { label } => cmd_pair(&http, &identity, &cfg, &dir, &label).await?,
         Cmd::Test { message } => cmd_test(&http, &identity, &cfg, &dir, &message).await?,
         Cmd::Unpair { id } => cmd_unpair(&http, &identity, &cfg, &dir, &id).await?,
+        Cmd::Ping => cmd_ping(&http, &identity, &cfg).await?,
         Cmd::Run => cmd_run(http, identity, cfg, dir).await?,
     }
     Ok(())
@@ -109,7 +112,26 @@ fn cmd_id(id: &Identity) {
     println!("\nConfigure the relay with:\n  PAGER_BRIDGE_PUBKEY={ed}");
 }
 
-fn cmd_devices(dir: &PathBuf) -> Result<()> {
+/// Confirm the relay is reachable and accepts this bridge's signed requests.
+async fn cmd_ping(http: &Client, id: &Identity, cfg: &Config) -> Result<()> {
+    let cfg_url = format!("{}/api/config", cfg.relay.trim_end_matches('/'));
+    let v: serde_json::Value = http.get(&cfg_url).send().await.context("relay unreachable")?.json().await?;
+    println!(
+        "relay {} reachable (contract v{})",
+        cfg.relay,
+        v.get("contractVersion").and_then(|x| x.as_u64()).unwrap_or(0)
+    );
+    // A signed GET that 404s (no such pairing) proves auth passed; 401/503 means it did not.
+    match client::fetch_pairing(http, id, &cfg.relay, &random_token()).await {
+        Ok(_) => {
+            println!("✓ authentication accepted by relay");
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("authenticated request rejected: {e}"),
+    }
+}
+
+fn cmd_devices(dir: &Path) -> Result<()> {
     let d = store::load_devices(dir)?;
     if d.devices.is_empty() {
         println!("no paired devices");
@@ -131,7 +153,7 @@ fn build_deliveries(devices: &[Device], notif: &Notif) -> Result<Vec<Delivery>> 
     Ok(out)
 }
 
-async fn cmd_test(http: &Client, id: &Identity, cfg: &Config, dir: &PathBuf, message: &str) -> Result<()> {
+async fn cmd_test(http: &Client, id: &Identity, cfg: &Config, dir: &Path, message: &str) -> Result<()> {
     let devices = store::load_devices(dir)?.devices;
     if devices.is_empty() {
         anyhow::bail!("no paired devices — run `pager-bridge pair` first");
@@ -143,7 +165,7 @@ async fn cmd_test(http: &Client, id: &Identity, cfg: &Config, dir: &PathBuf, mes
     Ok(())
 }
 
-async fn cmd_unpair(http: &Client, id: &Identity, cfg: &Config, dir: &PathBuf, device_id: &str) -> Result<()> {
+async fn cmd_unpair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, device_id: &str) -> Result<()> {
     let mut d = store::load_devices(dir)?;
     let before = d.devices.len();
     d.devices.retain(|x| x.id != device_id && !x.id.starts_with(device_id));
@@ -153,7 +175,7 @@ async fn cmd_unpair(http: &Client, id: &Identity, cfg: &Config, dir: &PathBuf, d
     Ok(())
 }
 
-async fn cmd_pair(http: &Client, id: &Identity, cfg: &Config, dir: &PathBuf, label: &str) -> Result<()> {
+async fn cmd_pair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, label: &str) -> Result<()> {
     // The device needs the VAPID public key to subscribe; the relay serves it.
     let vapid_public_key = http
         .get(format!("{}/api/config", cfg.relay.trim_end_matches('/')))

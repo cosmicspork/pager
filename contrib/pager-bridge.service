@@ -1,0 +1,17 @@
+[Unit]
+Description=Pager bridge (capture -> seal -> relay)
+Documentation=https://github.com/cosmicspork/pager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/pager-bridge run
+Restart=on-failure
+RestartSec=5
+# The deployed relay. The bridge listens on 127.0.0.1:4500 for the extension.
+Environment=PAGER_RELAY_URL=https://pager.0x69.xyz
+# Optional local-time quiet hours [start,end), e.g. drop pushes 22:00-07:00:
+# Environment=PAGER_QUIET=22-7
+
+[Install]
+WantedBy=default.target

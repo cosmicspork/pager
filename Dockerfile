@@ -12,8 +12,9 @@ RUN rustup target add wasm32-unknown-unknown \
 
 WORKDIR /build
 COPY . .
-# Build the device WASM into pwa/wasm, then the relay binary.
-RUN wasm-pack build wasm --release --target no-modules --out-dir pwa/wasm --out-name pager_wasm
+# Build the device WASM into /build/pwa/wasm (absolute: wasm-pack resolves
+# --out-dir relative to the crate dir otherwise), then the relay binary.
+RUN wasm-pack build wasm --release --target no-modules --out-dir /build/pwa/wasm --out-name pager_wasm
 RUN cargo build -p pager-relay --release
 
 FROM debian:bookworm-slim

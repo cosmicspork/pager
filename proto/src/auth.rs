@@ -53,6 +53,7 @@ pub fn sign(identity: &Identity, method: &str, path: &str, body: &[u8], now: u64
 /// Relay side: verify a request against the single authorized bridge public key
 /// (hex). Checks freshness against `now`/`window`, key authorization, then the
 /// Ed25519 signature over the canonical bytes.
+#[allow(clippy::too_many_arguments)] // a request descriptor split across header fields
 pub fn verify(
     authorized_pubkey_hex: &str,
     method: &str,
