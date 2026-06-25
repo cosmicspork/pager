@@ -11,6 +11,7 @@
 mod client;
 mod store;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,9 +21,9 @@ use anyhow::{Context, Result};
 use axum::{extract::State, http::StatusCode, routing::{get, post}, Json, Router};
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD as B64URL};
 use base64::Engine;
-use chrono::{Local, Timelike};
+use chrono::{DateTime, Local, Timelike};
 use clap::{Parser, Subcommand};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use pager_proto::{Delivery, Enrollment, Notif, PairPayload, SealedBlob};
 use reqwest::Client;
 use serde_json::Value;
@@ -237,6 +238,35 @@ struct Ctx {
     dir: PathBuf,
     http: Client,
     quiet: Option<(u32, u32)>,
+    /// conversationId → newest LastDeliveryTime (epoch secs) seen. In-memory;
+    /// resets on restart (the recency guard then prevents backfill spam).
+    seen: Mutex<HashMap<String, i64>>,
+}
+
+impl Ctx {
+    /// True only when an Outlook conversation sync is a newly *delivered* message:
+    /// its LastDeliveryTime advanced past what we last saw for that conversation
+    /// and is recent. Deletes, reads, flags, and moves re-emit the conversation
+    /// without advancing LastDeliveryTime, so they're dropped.
+    fn is_new_mail(&self, ev: &Value) -> bool {
+        let conv = ev.get("conversationId").and_then(|v| v.as_str());
+        let ld = ev.get("lastDelivery").and_then(|v| v.as_str());
+        let (conv, ld) = match (conv, ld) {
+            (Some(c), Some(l)) if !c.is_empty() => (c, l),
+            _ => return true, // no conversation data: don't second-guess, let it through
+        };
+        let ts = match DateTime::parse_from_rfc3339(ld) {
+            Ok(d) => d.timestamp(),
+            Err(_) => return true,
+        };
+        let age = Local::now().timestamp() - ts;
+        let recent = age <= 600 && age >= -120; // last ~10 min, allowing small clock skew
+        let mut seen = self.seen.lock();
+        let advanced = seen.get(conv).map_or(true, |&p| ts > p);
+        let next = seen.get(conv).map_or(ts, |&p| p.max(ts));
+        seen.insert(conv.to_string(), next);
+        advanced && recent
+    }
 }
 
 async fn cmd_run(http: Client, id: Arc<Identity>, cfg: Config, dir: PathBuf) -> Result<()> {
@@ -247,7 +277,7 @@ async fn cmd_run(http: Client, id: Arc<Identity>, cfg: Config, dir: PathBuf) -> 
         devices.read().devices.len(),
         cfg.quiet
     );
-    let ctx = Arc::new(Ctx { id, relay: cfg.relay, devices, dir, http, quiet: cfg.quiet });
+    let ctx = Arc::new(Ctx { id, relay: cfg.relay, devices, dir, http, quiet: cfg.quiet, seen: Mutex::new(HashMap::new()) });
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -265,6 +295,9 @@ async fn capture(State(ctx): State<Arc<Ctx>>, Json(ev): Json<Value>) -> StatusCo
     let Some(notif) = event_to_notif(&ev, ctx.quiet) else {
         return StatusCode::NO_CONTENT; // dropped by rules
     };
+    if notif.source == "outlook" && !ctx.is_new_mail(&ev) {
+        return StatusCode::NO_CONTENT; // conversation sync (delete/read/flag/move), not new mail
+    }
     let devices = ctx.devices.read().devices.clone();
     if devices.is_empty() {
         tracing::warn!("captured '{}' but no devices paired", notif.title);
