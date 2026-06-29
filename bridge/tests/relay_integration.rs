@@ -56,6 +56,17 @@ async fn full_bridge_relay_device_flow() {
     let port = free_port();
     let base = format!("http://127.0.0.1:{port}");
 
+    // A throwaway VAPID keypair so the relay boots without the gitignored
+    // production vapid.json (absent in CI). It's a real P-256 key, so the notify
+    // step below genuinely exercises signing before the fake push endpoint fails
+    // delivery. Written to a unique temp path (port is unique per run).
+    let vapid_path = std::env::temp_dir().join(format!("pager-test-vapid-{port}.json"));
+    std::fs::write(
+        &vapid_path,
+        r#"{"subject":"mailto:test@example.com","publicKey":"BGPPypnk4Gd5alKxX0deys8V6Rzdsx0u27MAjRT9TJ1EG9ny_uxzK2oaOEvZu1Qu2KBW1pT7_cGKxM6VovSROuU","privateKey":"iGx-jxXvcfUF0nV_btcqGpqeH7-XxIZkwTSHAuht4e0"}"#,
+    )
+    .unwrap();
+
     // Bridge identity: the relay is configured to trust exactly its ed25519 key.
     let (_m, bridge) = Identity::generate().unwrap();
     let bridge_pubkey = hex::encode(bridge.verifying_key().to_bytes());
@@ -63,7 +74,7 @@ async fn full_bridge_relay_device_flow() {
 
     let child = Command::new(&bin)
         .env("PAGER_RELAY_ADDR", format!("127.0.0.1:{port}"))
-        .env("PAGER_VAPID_FILE", workspace().join("vapid.json"))
+        .env("PAGER_VAPID_FILE", &vapid_path)
         .env("PAGER_PWA_DIR", workspace().join("pwa"))
         .env("PAGER_BRIDGE_PUBKEY", &bridge_pubkey)
         .env("PAGER_PAIR_TTL_SECS", "60")
