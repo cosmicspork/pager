@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/cosmicspork/pager/compare/v0.2.0...v0.3.0) (2026-06-29)
+
+
+### Features
+
+* **pwa:** green-phosphor pager redesign ([4460edd](https://github.com/cosmicspork/pager/commit/4460edd823d1e06b0c29e7eaaed91d2a8c0347e2))
+* **pwa:** redesign as a green-phosphor pager ([4e2385c](https://github.com/cosmicspork/pager/commit/4e2385c601000c009f7a131e44c341cfe6ab98ea))
+
 ## [0.2.0](https://github.com/cosmicspork/pager/compare/v0.1.0...v0.2.0) (2026-06-29)
 
 
