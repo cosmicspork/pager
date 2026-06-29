@@ -5,80 +5,263 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Pager</title>
   <link rel="manifest" href="/manifest.webmanifest" />
-  <meta name="theme-color" content="#0b0f14" />
+  <meta name="theme-color" content="#07130c" />
   <link rel="apple-touch-icon" href="/icon.svg" />
   <style>
-    :root { color-scheme: dark; }
-    body { margin: 0; min-height: 100dvh; display: grid; place-content: center; gap: 1rem;
-      font: 16px/1.5 -apple-system, system-ui, sans-serif; background: #0b0f14; color: #e6edf3;
-      text-align: center; padding: 2rem; max-width: 28rem; margin-inline: auto; }
-    h1 { margin: 0; font-size: 1.4rem; letter-spacing: .02em; }
-    p { color: #8b949e; margin: .25rem 0; }
-    button { font: inherit; padding: .8rem 1.2rem; border-radius: .6rem; border: 1px solid #2b3440;
-      background: #161b22; color: #e6edf3; cursor: pointer; }
-    button.primary { background: #1f6feb; border-color: #1f6feb; }
-    button:active { transform: translateY(1px); }
-    button:disabled { opacity: .5; }
-    textarea { width: 100%; box-sizing: border-box; font: 13px/1.4 ui-monospace, monospace;
-      background: #0d1117; color: #e6edf3; border: 1px solid #2b3440; border-radius: .5rem; padding: .6rem;
-      min-height: 4.5rem; resize: vertical; }
-    #status { color: #8b949e; min-height: 1.5em; }
-    .hidden { display: none; }
-    code { color: #58a6ff; word-break: break-all; }
-    button.small { padding: .35rem .7rem; font-size: .8rem; }
-    #log { margin: 1.25rem 0 .5rem; text-align: left; }
-    .logBar { display: flex; align-items: center; justify-content: space-between;
-      color: #8b949e; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
-      border-bottom: 1px solid #2b3440; padding-bottom: .4rem; margin-bottom: .5rem; }
-    #logList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
-    .logItem { background: #0d1117; border: 1px solid #2b3440; border-radius: .5rem; padding: .55rem .7rem; }
-    .logHead { display: flex; justify-content: space-between; gap: .5rem; font-size: .72rem; }
-    .logSrc { color: #58a6ff; text-transform: uppercase; letter-spacing: .05em; }
-    .logTime { color: #8b949e; }
-    .logTitle { font-weight: 600; margin-top: .15rem; }
-    .logBody { color: #8b949e; font-size: .9rem; margin-top: .1rem; white-space: pre-wrap; word-break: break-word; }
+    /* ============================================================
+       PAGER · "Phosphor"
+       The whole viewport is the green EL-backlit LCD glass. One
+       indulgence: the phosphor glow. Everything else is hard-edged.
+       ============================================================ */
+    @font-face {
+      font-family: "VT323"; font-style: normal; font-weight: 400; font-display: swap;
+      src: url("/vt323-latin.woff2") format("woff2");
+    }
+    :root {
+      --lcd-bg:    #07130c;   /* deep olive-black substrate     */
+      --lcd-bg2:   #0a1a10;   /* lit-glass tint near the top    */
+      --phos:      #8dffb0;   /* lit phosphor (bright text)     */
+      --phos-mid:  #57d98a;   /* secondary lit                  */
+      --phos-dim:  #3a7d54;   /* unlit/ghost pixels, dim labels */
+      --rule:      rgba(141,255,176,.22);
+      --amber:     #ffc24b;   /* the one caution accent         */
+      --glow:      0 0 6px rgba(141,255,176,.40), 0 0 1px rgba(141,255,176,.9);
+      --glow-soft: 0 0 5px rgba(87,217,138,.30);
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #000; }
+    body {
+      font-family: "VT323", ui-monospace, monospace;
+      color: var(--phos); -webkit-font-smoothing: none;
+    }
+
+    /* the device: one screen, pinned to the viewport, never scrolls */
+    .device {
+      position: relative; height: 100dvh; display: flex; flex-direction: column;
+      background: radial-gradient(120% 80% at 50% -10%, var(--lcd-bg2) 0%, var(--lcd-bg) 55%, #050d08 100%);
+      padding:
+        calc(env(safe-area-inset-top)    + 14px)
+        calc(env(safe-area-inset-right)  + 18px)
+        calc(env(safe-area-inset-bottom) + 12px)
+        calc(env(safe-area-inset-left)   + 18px);
+      overflow: hidden;
+    }
+    /* phosphor glass: scanlines + vignette. Pure decoration. */
+    .device::before {
+      content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 5;
+      background:
+        repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 1px, transparent 1px 3px),
+        radial-gradient(130% 100% at 50% 50%, transparent 58%, rgba(0,0,0,.55) 100%);
+      mix-blend-mode: multiply;
+    }
+    /* one slow EL-backlight sweep — the single moving part */
+    .device::after {
+      content: ""; position: absolute; left: 0; right: 0; height: 38%; top: -38%;
+      pointer-events: none; z-index: 6;
+      background: linear-gradient(180deg, transparent, rgba(141,255,176,.05), transparent);
+      animation: sweep 7.5s linear infinite;
+    }
+    @keyframes sweep { to { transform: translateY(380%); } }
+    .device > * { position: relative; z-index: 7; }
+
+    /* ---------- status header ---------- */
+    .status { flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px;
+              font-size: 21px; line-height: 1; letter-spacing: .5px; text-shadow: var(--glow); }
+    .status .row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .svc { display: inline-flex; align-items: center; gap: 8px; text-transform: uppercase; }
+    .svc .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--phos); box-shadow: 0 0 6px var(--phos); }
+    .sub { color: var(--phos-dim); font-size: 18px; text-shadow: var(--glow-soft); }
+    .bars { color: var(--phos-mid); font-size: 18px; letter-spacing: 1px; text-shadow: var(--glow-soft); }
+    .clock { font-variant-numeric: tabular-nums; }
+    #capRow { display: none; }
+    .cap.tap { cursor: pointer; }
+
+    /* out of service: dim signal, blink the indicator */
+    .device[data-state="register"] .bars,
+    .device[data-state="qr"]       .bars,
+    .device[data-state="boot"]     .bars { color: var(--phos-dim); opacity: .5; text-shadow: none; }
+    .device[data-state="register"] .svc .dot,
+    .device[data-state="qr"]       .svc .dot,
+    .device[data-state="boot"]     .svc .dot { background: var(--phos-dim); box-shadow: none; animation: blink 1.4s step-end infinite; }
+    @keyframes blink { 50% { opacity: .25; } }
+
+    .rule { flex: 0 0 auto; height: 0; margin: 10px 0; border: 0; border-top: 1px dashed var(--rule); }
+
+    /* ---------- stored pages ---------- */
+    .listwrap { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
+    .listlabel { flex: 0 0 auto; color: var(--phos-dim); font-size: 16px; letter-spacing: 2px;
+                 text-transform: uppercase; margin-bottom: 6px; }
+    .list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch; scrollbar-width: none; list-style: none; margin: 0; padding: 0; }
+    .list::-webkit-scrollbar { width: 0; height: 0; }
+
+    .page { padding: 9px 0 10px; border-bottom: 1px dashed rgba(141,255,176,.14); }
+    .page:first-child { padding-top: 2px; }
+    .phead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+             font-size: 18px; color: var(--phos-mid); text-shadow: var(--glow-soft); }
+    .from { display: inline-flex; align-items: baseline; gap: 7px; text-transform: uppercase; letter-spacing: 1px; }
+    .from::before { content: "›"; color: var(--phos-dim); }
+    .when { color: var(--phos-dim); }
+    .ptitle { font-size: 24px; line-height: 1.05; margin-top: 3px; text-shadow: var(--glow); }
+    .pbody  { font-size: 19px; line-height: 1.12; margin-top: 2px; color: var(--phos-mid);
+              text-shadow: var(--glow-soft); white-space: pre-wrap; word-break: break-word; }
+    .page.fresh .from::before { color: var(--amber); }
+    .page.fresh .ptitle { color: #d9ffe6; }
+
+    .empty { display: none; flex-direction: column; align-items: center; justify-content: center;
+             height: 100%; text-align: center; gap: 8px; color: var(--phos-dim); }
+    .empty .big { font-size: 30px; letter-spacing: 2px; text-shadow: var(--glow-soft); }
+    .empty .small { font-size: 19px; }
+
+    /* ---------- footer ---------- */
+    .actions { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+               font-size: 19px; text-shadow: var(--glow-soft); }
+    .count { color: var(--phos-dim); letter-spacing: 1px; }
+
+    /* hard-edged phosphor buttons — bracketed, no radius */
+    .btn { appearance: none; font: inherit; cursor: pointer; background: transparent; color: var(--phos);
+           border: 1px solid var(--rule); border-radius: 0; padding: 7px 14px; letter-spacing: 1px;
+           text-transform: uppercase; text-shadow: var(--glow); line-height: 1; }
+    .btn:active { background: rgba(141,255,176,.12); }
+    .btn:disabled { opacity: .5; }
+    .btn.solid { background: rgba(141,255,176,.14); border-color: var(--phos-mid); }
+    .btn.ghost { border-color: transparent; color: var(--phos-dim); padding-left: 0; padding-right: 0; }
+    .btn.block { width: 100%; text-align: center; padding: 13px; }
+    .btn.danger { border-color: var(--amber); color: var(--amber); text-shadow: 0 0 6px rgba(255,194,75,.4); }
+    .btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+    /* ---------- centered panels (register / qr / boot) ---------- */
+    .panel { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column;
+             align-items: center; justify-content: center; text-align: center; gap: 12px; padding: 8px 0; }
+    .nosig { font-size: 30px; letter-spacing: 3px; text-shadow: var(--glow); }
+    .lede { font-size: 20px; color: var(--phos-mid); max-width: 26ch; line-height: 1.15; text-shadow: var(--glow-soft); }
+    .panel textarea { width: 100%; max-width: 320px; min-height: 84px; resize: none;
+      background: rgba(0,0,0,.35); color: var(--phos); border: 1px solid var(--rule); border-radius: 0;
+      font: inherit; font-size: 18px; padding: 10px 12px; letter-spacing: .5px; text-shadow: var(--glow-soft); }
+    .panel textarea::placeholder { color: var(--phos-dim); text-transform: uppercase; letter-spacing: 1px; }
+    .btnrow { display: flex; gap: 10px; }
+    .statusline { min-height: 1.4em; margin: 0; font-size: 18px; color: var(--phos-mid); text-shadow: var(--glow-soft); }
+
+    /* numbered registration steps (a real sequence → numbering earns its place) */
+    .steps { list-style: none; margin: 4px 0; padding: 0; text-align: left; display: flex;
+             flex-direction: column; gap: 9px; max-width: 300px; }
+    .steps li { display: flex; gap: 12px; font-size: 19px; color: var(--phos-mid); text-shadow: var(--glow-soft); }
+    .steps .n { color: var(--phos-dim); border: 1px solid var(--rule); width: 1.5em; height: 1.5em;
+                display: grid; place-content: center; flex: 0 0 auto; }
+
+    /* ---------- FUNCTION sheet: device info + the rare/destructive actions ---------- */
+    .sheet { position: absolute; inset: 0; z-index: 9; display: none; flex-direction: column;
+      background: radial-gradient(120% 80% at 50% -10%, var(--lcd-bg2) 0%, #060f0a 60%, #040a07 100%);
+      padding:
+        calc(env(safe-area-inset-top)    + 14px)
+        calc(env(safe-area-inset-right)  + 18px)
+        calc(env(safe-area-inset-bottom) + 12px)
+        calc(env(safe-area-inset-left)   + 18px); }
+    .device.func-open .func-sheet { display: flex; }
+    .sheet-bar { display: flex; align-items: baseline; justify-content: space-between;
+                 font-size: 24px; letter-spacing: 1px; text-transform: uppercase; text-shadow: var(--glow); }
+    .kv { margin: 6px 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    .kv dt { color: var(--phos-dim); font-size: 16px; letter-spacing: 2px; text-transform: uppercase; }
+    .kv dd { margin: 2px 0 0; font-size: 20px; color: var(--phos-mid); text-shadow: var(--glow-soft); word-break: break-all; }
+    .sheet-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+
+    /* ---------- which pieces show per state ---------- */
+    .device[data-state="service"] .listwrap,
+    .device[data-state="empty"]   .listwrap { display: flex; }
+    .device[data-state="empty"]   .list   { display: none; }
+    .device[data-state="empty"]   .empty  { display: flex; }
+    .device[data-state="service"] #capRow,
+    .device[data-state="empty"]   #capRow { display: inline-flex; }
+    .device[data-state="register"] .reg   { display: flex; }
+    .device[data-state="qr"]       .qr    { display: flex; }
+    .device[data-state="boot"]     .boot  { display: flex; }
+    .device[data-state="register"] .actions,
+    .device[data-state="qr"]       .actions,
+    .device[data-state="boot"]     .actions { visibility: hidden; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .device::after { display: none; }
+      .svc .dot { animation: none !important; }
+    }
   </style>
 </head>
 <body>
-  <h1>Pager</h1>
+  <main class="device" data-state="boot">
 
-  <!-- Safari landing from the QR: hand the pairing code to the installed app. -->
-  <section id="copy" class="hidden">
-    <p>Pairing code captured. To finish:</p>
-    <p>1. Tap <b>Copy code</b> below.<br>2. Open the <b>Pager</b> app from your Home Screen.<br>3. Tap <b>Paste &amp; pair</b>.</p>
-    <button id="copyBtn" class="primary">Copy code</button>
-    <p id="copyMsg"></p>
-    <p style="font-size:.8rem">Not installed yet? In Safari: Share → <b>Add to Home Screen</b> first.</p>
-  </section>
+    <!-- status header -->
+    <header class="status">
+      <div class="row">
+        <span class="svc"><i class="dot"></i><b id="svcTxt">OUT OF SERVICE</b></span>
+        <span class="bars">▮▮▮▮·</span>
+      </div>
+      <div class="row">
+        <span class="sub cap tap" id="capRow">CAP&nbsp;&nbsp;<span id="capShort"></span></span>
+        <span class="sub clock" id="clock"></span>
+      </div>
+    </header>
 
-  <!-- Installed app / root: pair, or show paired state. -->
-  <section id="app" class="hidden">
-    <div id="pairing">
-      <p>Pair this device to start receiving your work pings.</p>
-      <textarea id="code" placeholder="Paste pairing code…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
-      <div style="display:flex; gap:.5rem; justify-content:center; margin-top:.6rem">
-        <button id="pasteBtn">Paste</button>
-        <button id="pairBtn" class="primary">Paste &amp; pair</button>
+    <hr class="rule" />
+
+    <!-- service / empty: stored pages -->
+    <div class="listwrap">
+      <div class="listlabel">Stored pages</div>
+      <ul id="logList" class="list"></ul>
+      <div class="empty">
+        <div class="big">NO PAGES ON FILE</div>
+        <div class="small">You're in service. Pages land here when you're away.</div>
       </div>
     </div>
-    <div id="paired" class="hidden">
-      <p>✓ Paired. Notifications will appear here when you're away.</p>
-      <p style="font-size:.8rem">Device <code id="devId"></code></p>
 
-      <section id="log">
-        <div class="logBar">
-          <span>Recent</span>
-          <button id="clearLogBtn" class="small">Clear</button>
-        </div>
-        <ul id="logList"></ul>
-        <p id="logEmpty" class="hidden" style="font-size:.85rem">No notifications yet.</p>
-      </section>
+    <!-- register (out of service) -->
+    <section class="panel reg">
+      <div class="nosig">NO SIGNAL</div>
+      <p class="lede">Register this pager to start receiving your work pages.</p>
+      <textarea id="code" placeholder="Paste registration code…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+      <div class="btnrow">
+        <button id="pasteBtn" class="btn">Paste</button>
+        <button id="pairBtn" class="btn solid">Register</button>
+      </div>
+      <p id="status" class="statusline"></p>
+    </section>
 
-      <button id="repairBtn">Re-pair</button>
-    </div>
-  </section>
+    <!-- QR copy landing (Safari handoff from the pairing QR) -->
+    <section class="panel qr">
+      <div class="nosig">CODE CAPTURED</div>
+      <ol class="steps">
+        <li><span class="n">1</span><span>Tap <b>Copy code</b> below</span></li>
+        <li><span class="n">2</span><span>Open <b>Pager</b> from your Home Screen</span></li>
+        <li><span class="n">3</span><span>Tap <b>Register</b></span></li>
+      </ol>
+      <button id="copyBtn" class="btn solid">Copy code</button>
+      <p id="copyMsg" class="statusline"></p>
+    </section>
 
-  <div id="status">…</div>
+    <!-- boot: shown until the app resolves paired/unpaired -->
+    <section class="panel boot"><div class="nosig" style="opacity:.45">···</div></section>
+
+    <hr class="rule" />
+
+    <!-- action footer -->
+    <footer class="actions">
+      <button id="funcBtn" class="btn ghost">Function ›</button>
+      <span class="count" id="count">0 pages</span>
+    </footer>
+
+    <!-- FUNCTION sheet -->
+    <section class="sheet func-sheet" aria-label="function">
+      <div class="sheet-bar"><span>Function</span><button id="funcClose" class="btn ghost">× Close</button></div>
+      <hr class="rule" />
+      <dl class="kv">
+        <dt>Cap code</dt><dd id="capFull"></dd>
+        <dt>Relay</dt><dd id="relayHost">—</dd>
+      </dl>
+      <div class="sheet-actions">
+        <button id="clearLogBtn" class="btn block">Delete all pages</button>
+        <button id="repairBtn" class="btn block danger">Re-register</button>
+      </div>
+    </section>
+  </main>
 
   <script src="/wasm/pager_wasm.js"></script>
   <script src="/app.js"></script>
