@@ -260,9 +260,9 @@ impl Ctx {
             Err(_) => return true,
         };
         let age = Local::now().timestamp() - ts;
-        let recent = age <= 600 && age >= -120; // last ~10 min, allowing small clock skew
+        let recent = (-120..=600).contains(&age); // last ~10 min, allowing small clock skew
         let mut seen = self.seen.lock();
-        let advanced = seen.get(conv).map_or(true, |&p| ts > p);
+        let advanced = seen.get(conv).is_none_or(|&p| ts > p);
         let next = seen.get(conv).map_or(ts, |&p| p.max(ts));
         seen.insert(conv.to_string(), next);
         advanced && recent
