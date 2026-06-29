@@ -52,14 +52,23 @@ pairing-blob upload, which is size-capped and TTL-bounded.
 
 - **Relay** runs in the homelab at `https://pager.0x69.xyz` (manifests in
   `cosmicspork/homelab` under `kubernetes/apps/{base,production}/pager`). Image:
-  `registry.digitalocean.com/cosmicspork/pager`, built by the `Dockerfile` here
-  (multi-stage: builds the WASM and the relay, serves `pwa/`). The VAPID private
-  key is a SOPS-encrypted secret; the authorized bridge key is the
-  `PAGER_BRIDGE_PUBKEY` env. Subscriptions persist to a PVC (`PAGER_SUBS_FILE`)
-  so a restart keeps devices registered.
+  `ghcr.io/cosmicspork/pager`, built by the `Dockerfile` here (multi-stage:
+  builds the WASM and the relay, serves `pwa/`). The VAPID private key is a
+  SOPS-encrypted secret; the authorized bridge key is the `PAGER_BRIDGE_PUBKEY`
+  env. Subscriptions persist to a PVC (`PAGER_SUBS_FILE`) so a restart keeps
+  devices registered.
 - **Bridge** runs on your machine as a `systemd --user` service
   (`contrib/pager-bridge.service`), listening on `127.0.0.1:4500` for the
   extension and forwarding to `PAGER_RELAY_URL`.
+
+### Releases & deploys
+
+CI (`.github/workflows/ci.yml`) runs clippy + tests on every PR. Releases are
+cut by release-please (`release.yml`): merging the release PR tags the version,
+then builds and pushes `ghcr.io/cosmicspork/pager:<version>` (and `:latest`).
+The homelab repo's Renovate watches that GHCR tag and opens the deploy bump;
+merging it lets Flux roll out. So the path is: merge to `main` → merge the
+release PR → merge the Renovate bump in `homelab`.
 
 Relay env: `PAGER_RELAY_ADDR` (`127.0.0.1:4500`), `PAGER_VAPID_FILE`
 (`vapid.json`), `PAGER_PWA_DIR` (`pwa`), `PAGER_BRIDGE_PUBKEY` (required for
