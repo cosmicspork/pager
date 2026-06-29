@@ -10,13 +10,34 @@ const show = (sel, on = true) => $(sel).classList.toggle("hidden", !on);
 
 const isStandalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 
-// ---- tiny IndexedDB kv (shared shape with sw.js) ----
+// ---- tiny IndexedDB (shared schema with sw.js: v2, stores "kv" + "log") ----
 function idb() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open("pager", 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    const r = indexedDB.open("pager", 2);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      if (!db.objectStoreNames.contains("kv")) db.createObjectStore("kv");
+      if (!db.objectStoreNames.contains("log"))
+        db.createObjectStore("log", { keyPath: "id", autoIncrement: true });
+    };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
+  });
+}
+async function logAll() {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const t = db.transaction("log").objectStore("log").getAll();
+    t.onsuccess = () => res(t.result || []);
+    t.onerror = () => rej(t.error);
+  });
+}
+async function logClear() {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const t = db.transaction("log", "readwrite").objectStore("log").clear();
+    t.onsuccess = () => res();
+    t.onerror = () => rej(t.error);
   });
 }
 async function idbGet(k) {
@@ -61,9 +82,64 @@ function ensureWasm() {
   return wasmReady;
 }
 
+// ---- notification log rendering ----
+const SOURCE_LABEL = { teams: "Teams", outlook: "Outlook", msg: "Message", test: "Test" };
+
+function fmtTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + "m ago";
+  if (mins < 1440) return Math.round(mins / 60) + "h ago";
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+// Notif title/body originate from external senders — build with textContent only.
+async function renderLog() {
+  const list = $("#logList");
+  if (!list) return;
+  const items = (await logAll()).sort((a, b) => b.ts - a.ts);
+  show("#logEmpty", items.length === 0);
+  list.replaceChildren();
+  for (const it of items) {
+    const li = document.createElement("li");
+    li.className = "logItem";
+    const head = document.createElement("div");
+    head.className = "logHead";
+    const src = document.createElement("span");
+    src.className = "logSrc";
+    src.textContent = SOURCE_LABEL[it.source] || it.source || "Pager";
+    const time = document.createElement("span");
+    time.className = "logTime";
+    time.textContent = fmtTime(it.ts);
+    head.append(src, time);
+    const title = document.createElement("div");
+    title.className = "logTitle";
+    title.textContent = it.title || "";
+    li.append(head, title);
+    if (it.body) {
+      const body = document.createElement("div");
+      body.className = "logBody";
+      body.textContent = it.body;
+      li.append(body);
+    }
+    list.append(li);
+  }
+}
+
 async function main() {
   if (!("serviceWorker" in navigator)) { status("This browser can't run the app."); return; }
   await navigator.serviceWorker.register("/sw.js");
+
+  // The service worker pings us after it logs a freshly arrived push.
+  navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e.data && e.data.type === "notif") renderLog().catch(() => {});
+  });
+  // Returning to the foreground may have missed live pings — refresh then.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) renderLog().catch(() => {});
+  });
 
   const hash = location.hash.slice(1);
   const landing = location.pathname.replace(/\/$/, "") === "/pair" && hash;
@@ -99,6 +175,7 @@ async function renderApp(prefill) {
     show("#pairing", false);
     show("#paired", true);
     status("Ready");
+    await renderLog();
   } else {
     if (prefill) $("#code").value = prefill;
     show("#pairing", true);
@@ -112,6 +189,7 @@ async function renderApp(prefill) {
   };
   $("#pairBtn").onclick = () => pair($("#code").value.trim());
   $("#repairBtn").onclick = () => { show("#pairing", true); show("#paired", false); };
+  $("#clearLogBtn").onclick = async () => { await logClear(); await renderLog(); };
 }
 
 async function pair(code) {

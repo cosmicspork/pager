@@ -25,6 +25,18 @@
     #status { color: #8b949e; min-height: 1.5em; }
     .hidden { display: none; }
     code { color: #58a6ff; word-break: break-all; }
+    button.small { padding: .35rem .7rem; font-size: .8rem; }
+    #log { margin: 1.25rem 0 .5rem; text-align: left; }
+    .logBar { display: flex; align-items: center; justify-content: space-between;
+      color: #8b949e; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+      border-bottom: 1px solid #2b3440; padding-bottom: .4rem; margin-bottom: .5rem; }
+    #logList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+    .logItem { background: #0d1117; border: 1px solid #2b3440; border-radius: .5rem; padding: .55rem .7rem; }
+    .logHead { display: flex; justify-content: space-between; gap: .5rem; font-size: .72rem; }
+    .logSrc { color: #58a6ff; text-transform: uppercase; letter-spacing: .05em; }
+    .logTime { color: #8b949e; }
+    .logTitle { font-weight: 600; margin-top: .15rem; }
+    .logBody { color: #8b949e; font-size: .9rem; margin-top: .1rem; white-space: pre-wrap; word-break: break-word; }
   </style>
 </head>
 <body>
@@ -52,6 +64,16 @@
     <div id="paired" class="hidden">
       <p>✓ Paired. Notifications will appear here when you're away.</p>
       <p style="font-size:.8rem">Device <code id="devId"></code></p>
+
+      <section id="log">
+        <div class="logBar">
+          <span>Recent</span>
+          <button id="clearLogBtn" class="small">Clear</button>
+        </div>
+        <ul id="logList"></ul>
+        <p id="logEmpty" class="hidden" style="font-size:.85rem">No notifications yet.</p>
+      </section>
+
       <button id="repairBtn">Re-pair</button>
     </div>
   </section>
