@@ -60,7 +60,8 @@ through the relay).
 
 ### Done and validated
 - **Capture extension** (`extension/`, Chrome MV3): MAIN-world content script
-  patches `Notification` + `fetch`; isolated relay script + service worker
+  patches `Notification` (all hosts) + `fetch` (Outlook hosts only, where the
+  `/owa/notificationchannel` reader lives); isolated relay script + service worker
   forward to a local endpoint. Validated live through the full stack.
 - **Relay + PWA plaintext push** (`relay/`, `pwa/`): builds clean (Rust 1.96,
   `web-push` 0.11), runs on `:4500`, all endpoints smoke-tested, and a desktop

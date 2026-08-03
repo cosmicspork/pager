@@ -9,6 +9,7 @@
   'use strict';
   const MARK = '__pagerEvent';
   const RS = String.fromCharCode(30); // SignalR frame terminator (\x1e)
+  const IS_OUTLOOK = /(^|\.)outlook\./.test(location.host);
 
   function emit(ev) {
     try {
@@ -39,6 +40,11 @@
   // over SSE: one long-lived streaming GET whose body is a sequence of
   // RS-terminated, "data:"-prefixed SignalR frames. We read the stream
   // incrementally, buffering across chunks since a frame can span reads.
+  //
+  // The fetch patch below is gated to Outlook hosts: nothing on Teams matches
+  // that URL, so there the wrapper would sit in the hot path of every request
+  // and put this file at the top of every failed-fetch stack trace — which
+  // reads as "the extension broke Teams" when the failure is Teams' own.
   function handleFrame(frame) {
     let s = frame.trim();
     if (!s) return;
@@ -70,7 +76,7 @@
 
   try {
     const origFetch = window.fetch;
-    if (origFetch && !origFetch.__pagerWrapped) {
+    if (IS_OUTLOOK && origFetch && !origFetch.__pagerWrapped) {
       const wrapped = function (input, init) {
         let url;
         try { url = (typeof input === 'string') ? input : (input && input.url); } catch (e) {}

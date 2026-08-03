@@ -18,7 +18,10 @@ Three pieces, because the page's CSP blocks both inline injection and a direct
 localhost fetch:
 
 - `main-capture.js` — runs in the page's **MAIN** world (manifest `world`),
-  patches `Notification` and `fetch`, posts events via `window.postMessage`.
+  patches `Notification` (all hosts) and `fetch` (Outlook hosts only — the
+  stream reader only matches `/owa/notificationchannel`, and leaving the
+  wrapper off Teams keeps it out of Teams' own failed-fetch stack traces),
+  posts events via `window.postMessage`.
 - `relay.js` — **isolated** world; forwards those messages to the service worker.
 - `background.js` — service worker; POSTs each event to the bridge. Extension
   fetch is exempt from the page CSP.
