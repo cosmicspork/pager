@@ -44,10 +44,10 @@ export const INTERVAL_MIN_SEC = 30;
 export const INTERVAL_MAX_SEC = 900;
 
 // The bridge is a loopback listener by design (see bridge/): it holds the only
-// long-term identity key and must not be reachable off the machine. Anything
-// else is refused here so a bad paste can't start shipping captured message
-// text to another host.
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+// long-term identity key and must not be reachable off the machine. Accept only
+// hosts granted in manifest.json, so a bad paste cannot send captured message
+// text to another host or a URL the extension cannot fetch.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
 
 export function isValidBridgeUrl(value) {
   let u;

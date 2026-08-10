@@ -19,11 +19,17 @@
   const saved = {};
   let active = false;
 
-  function suppressed(target, type) {
-    return (
-      (target === document && type === 'visibilitychange') ||
-      (target === window && (type === 'freeze' || type === 'resume'))
-    );
+  const LIFECYCLE_EVENTS = ['visibilitychange', 'freeze', 'resume', 'focus', 'blur'];
+
+  function blockLifecycleEvent(ev) {
+    ev.stopImmediatePropagation();
+  }
+
+  function setLifecycleBlockers(enabled) {
+    const method = enabled ? 'addEventListener' : 'removeEventListener';
+    for (const target of [window, document]) {
+      for (const type of LIFECYCLE_EVENTS) target[method](type, blockLifecycleEvent, true);
+    }
   }
 
   function install() {
@@ -44,35 +50,18 @@
     } catch (e) {}
 
     try {
-      saved.hasFocus = Document.prototype.hasFocus;
-      Document.prototype.hasFocus = function () { return true; };
-    } catch (e) {}
-
-    // The on-property form of the same handler, so assigning it is a no-op
-    // rather than a second path to the event.
-    try {
-      saved.onvisibilitychange = Object.getOwnPropertyDescriptor(Document.prototype, 'onvisibilitychange');
-      Object.defineProperty(Document.prototype, 'onvisibilitychange', {
+      saved.hasFocus = Object.getOwnPropertyDescriptor(Document.prototype, 'hasFocus');
+      Object.defineProperty(Document.prototype, 'hasFocus', {
         configurable: true,
-        get: function () { return null; },
-        set: function () {},
+        value: function () { return true; },
       });
     } catch (e) {}
 
-    // Drop the listener registrations outright: overriding visibilityState
-    // stops a *read* from betraying the tab, but the event still fires on a
-    // real tab switch and Teams acts on the event alone.
+    // Register capturing handlers before the app's scripts. This blocks every
+    // supported focus/visibility path without discarding registrations, so a
+    // live toggle-off restores the page's original listeners as well as APIs.
     try {
-      saved.addEventListener = EventTarget.prototype.addEventListener;
-      saved.removeEventListener = EventTarget.prototype.removeEventListener;
-      EventTarget.prototype.addEventListener = function (type) {
-        if (suppressed(this, type)) return undefined;
-        return saved.addEventListener.apply(this, arguments);
-      };
-      EventTarget.prototype.removeEventListener = function (type) {
-        if (suppressed(this, type)) return undefined;
-        return saved.removeEventListener.apply(this, arguments);
-      };
+      setLifecycleBlockers(true);
     } catch (e) {}
 
     // Idle Detection reports OS-level idle, which no amount of synthetic page
@@ -97,16 +86,12 @@
     if (!active) return;
     active = false;
     try {
+      setLifecycleBlockers(false);
       if (saved.hidden) Object.defineProperty(Document.prototype, 'hidden', saved.hidden);
       if (saved.visibilityState) Object.defineProperty(Document.prototype, 'visibilityState', saved.visibilityState);
-      if (saved.onvisibilitychange) Object.defineProperty(Document.prototype, 'onvisibilitychange', saved.onvisibilitychange);
-      if (saved.hasFocus) Document.prototype.hasFocus = saved.hasFocus;
-      if (saved.addEventListener) EventTarget.prototype.addEventListener = saved.addEventListener;
-      if (saved.removeEventListener) EventTarget.prototype.removeEventListener = saved.removeEventListener;
+      if (saved.hasFocus) Object.defineProperty(Document.prototype, 'hasFocus', saved.hasFocus);
       if (saved.IdleDetector) Object.defineProperty(window, 'IdleDetector', saved.IdleDetector);
     } catch (e) {}
-    // Listeners the app tried to register while the mask was on were dropped,
-    // not stashed; it re-registers them on its next reload.
   }
 
   window.addEventListener('message', function (ev) {

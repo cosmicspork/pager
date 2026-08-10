@@ -27,15 +27,11 @@
   // firing a synthetic pulse immediately.
   let lastPulse = Date.now();
 
-  // Synthetic events carry isTrusted === false. Set it per-event rather than
-  // patching Event.prototype: this stays scoped to the events we create, and
-  // leaves every other event the app sees reading truthfully.
+  // Events dispatched from page JavaScript are always untrusted. Do not try to
+  // redefine `isTrusted`: Chromium makes it an own, non-configurable property.
+  // These pulses are best-effort activity signals, not user input.
   function synth(Ctor, type, init) {
-    const ev = new Ctor(type, init);
-    try {
-      Object.defineProperty(ev, 'isTrusted', { value: true });
-    } catch (e) {}
-    return ev;
+    return new Ctor(type, init);
   }
 
   function pulse() {

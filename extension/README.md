@@ -14,28 +14,29 @@ from reporting you idle. Replaces the Tampermonkey spikes in `../spike/`.
 
 ## Keep Teams active
 
-Off by default. Teams decides you are away from three independent signals, so
-holding presence takes two scripts:
+Off by default. The extension sends two kinds of browser signals:
 
 - `keep-active.js` — dispatches a synthetic `mousemove` and a Shift
   `keydown`/`keyup` on an interval (default 240s, under the ~5 minute idle
   threshold). Shift is chosen because it cannot alter a focused composer.
-  `isTrusted` is set per-event rather than by patching `Event.prototype`, so
-  every other event the app sees still reads truthfully.
+  Browser-created events remain `isTrusted === false`; `dispatchEvent()` cannot
+  make them user input. Verify that Teams accepts these pulses in your tenant.
 - `keep-active-mask.js` — reports the tab visible, the window focused, and the
   OS not idle (`document.hidden`, `visibilityState`, `hasFocus()`,
-  `visibilitychange`/`freeze` listeners, `IdleDetector`). Only needed if you
-  background the tab, but that is the usual case. This is the most invasive
-  thing the extension does — it changes what the page observes rather than only
-  reading — so it is a separate toggle, restores everything on toggle-off, and
-  is only ever registered for Teams hosts.
+  lifecycle callbacks for `visibilitychange`, `focus`, `blur`, `freeze`, and
+  `resume`, plus `IdleDetector`). Only needed if you background the tab, but
+  that is the usual case. This is the most invasive thing the extension does —
+  it changes what the page observes rather than only reading — so it is a
+  separate toggle, preserves listeners for live toggle-off, and is only ever
+  registered for Teams hosts.
 
 Because Chrome throttles page timers in background tabs — exactly where this
 matters — a `chrome.alarms` heartbeat in the service worker also pokes open Teams
 tabs once a minute. The page timer and the poke share one throttle, so whichever
 arrives first pulses and the other is a no-op.
 
-The tab has to stay open; this holds presence, it does not create it.
+The tab has to stay open. This is best-effort activity simulation, not a
+guarantee that Teams will hold your presence.
 
 ## Settings
 
@@ -55,9 +56,9 @@ the popup):
 | Forward the install ping | on | the one `__diag` event per tab load |
 
 Settings live in `chrome.storage.sync`. The bridge URL is restricted to
-`localhost`/`127.0.0.1`/`[::1]` — the bridge holds the only long-term identity
-key and is not meant to be reachable off the machine, so a bad paste can't start
-shipping captured message text to another host.
+`localhost`/`127.0.0.1` — the hosts granted in `manifest.json`. The bridge holds
+the only long-term identity key and is not meant to be reachable off the
+machine, so a bad paste cannot start shipping captured message text elsewhere.
 
 ## How it's wired
 
