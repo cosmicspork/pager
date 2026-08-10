@@ -94,3 +94,25 @@ test('suppresses lifecycle notifications only while masking is enabled', async (
   assert.equal(visibilityChanges, 1);
   assert.equal(blurs, 1);
 });
+
+test('leaves focus and blur alone when they are only passing through window', async () => {
+  const { window } = await installMask();
+  const element = {};
+  let elementFocuses = 0;
+  let elementBlurs = 0;
+  let windowBlurs = 0;
+
+  window.addEventListener('focus', () => elementFocuses++, true);
+  window.addEventListener('blur', (ev) => (ev.target === window ? windowBlurs++ : elementBlurs++), true);
+
+  // An element's focus/blur reaches it through the capture phase on window.
+  // Blocking those would take out focus handling for the whole page.
+  window.dispatchEvent(event('focus', { target: element }));
+  window.dispatchEvent(event('blur', { target: element }));
+  assert.equal(elementFocuses, 1);
+  assert.equal(elementBlurs, 1);
+
+  // The window's own blur is the presence signal, and stays suppressed.
+  window.dispatchEvent(event('blur'));
+  assert.equal(windowBlurs, 0);
+});

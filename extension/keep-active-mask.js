@@ -21,7 +21,12 @@
 
   const LIFECYCLE_EVENTS = ['visibilitychange', 'freeze', 'resume', 'focus', 'blur'];
 
+  // focus and blur reach their target through the capture phase on window, so
+  // stopping every one of them here would take out focus handling for every
+  // element on the page. Only the window/document-targeted events are the
+  // presence signals this is meant to hide.
   function blockLifecycleEvent(ev) {
+    if (ev.target !== window && ev.target !== document) return;
     ev.stopImmediatePropagation();
   }
 
