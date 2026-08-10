@@ -17,11 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: extension tests
+        run: node --test extension/test/*.test.mjs
       # default-members is proto/relay/bridge (the wasm crate only builds for
       # wasm32, so it's checked separately below).
       - name: clippy

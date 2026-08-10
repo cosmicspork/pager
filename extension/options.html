@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Pager settings</title>
+  <link rel="stylesheet" href="ui.css" />
+  <style>body { max-width: 560px; margin: 0 auto; padding: 22px 20px 32px; }</style>
+</head>
+<body>
+  <h1>Pager</h1>
+  <p class="sub">Chrome capture extension · settings</p>
+
+  <h2>Script injection</h2>
+  <div class="row">
+    <label for="captureTeams">
+      <span class="name">Teams capture</span>
+      <span class="hint">Chat notifications, via the page's Notification API.</span>
+    </label>
+    <input type="checkbox" id="captureTeams" />
+  </div>
+  <div class="row">
+    <label for="captureOutlook">
+      <span class="name">Outlook capture</span>
+      <span class="hint">New mail, by reading the OWA notification channel.</span>
+    </label>
+    <input type="checkbox" id="captureOutlook" />
+  </div>
+  <p class="hint">
+    Off means the scripts are never injected — the extension registers content
+    scripts from these toggles rather than loading them and checking a flag.
+    Already-open tabs keep the old scripts until you reload them.
+  </p>
+
+  <h2>Keep Teams active</h2>
+  <div class="row">
+    <label for="keepActive">
+      <span class="name">Enabled</span>
+      <span class="hint">Sends synthetic activity; Teams may ignore untrusted browser events.</span>
+    </label>
+    <input type="checkbox" id="keepActive" />
+  </div>
+  <div class="field">
+    <label for="keepActiveIntervalSec">
+      <span class="name">Pulse interval (seconds)</span>
+    </label>
+    <input type="number" id="keepActiveIntervalSec" min="30" max="900" step="10" />
+    <span class="hint">
+      A synthetic mouse move and Shift keypress, this often. Teams goes idle at
+      about five minutes, so keep this under 300.
+    </span>
+  </div>
+  <div class="row">
+    <label for="keepActiveMask">
+      <span class="name">Mask visibility &amp; focus</span>
+      <span class="hint">
+        Also report the tab visible, the window focused, and the OS not idle.
+        Needed if you background the tab, since input events alone won't hold
+        presence. This is the most invasive part: it changes what the page
+        observes, not just what Pager reads.
+      </span>
+    </label>
+    <input type="checkbox" id="keepActiveMask" />
+  </div>
+
+  <h2>Bridge</h2>
+  <div class="field">
+    <label for="bridgeUrl"><span class="name">Capture endpoint</span></label>
+    <input type="text" id="bridgeUrl" spellcheck="false" />
+    <span class="hint" id="bridgeHint">
+      Must be http on localhost or 127.0.0.1 — the bridge holds the signing key
+      and is not meant to be reachable off this machine.
+    </span>
+  </div>
+
+  <h2>Diagnostics</h2>
+  <div class="row">
+    <label for="diagnostics">
+      <span class="name">Forward the install ping</span>
+      <span class="hint">
+        One <code>__diag</code> event per tab load, to confirm injection. Noise
+        once it works.
+      </span>
+    </label>
+    <input type="checkbox" id="diagnostics" />
+  </div>
+
+  <div class="footer">
+    <button id="reset">Restore defaults</button>
+    <span class="saved" id="saved">saved</span>
+  </div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

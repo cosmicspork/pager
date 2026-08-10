@@ -3,34 +3,18 @@
   "name": "Pager capture",
   "version": "0.1.0",
   "description": "Capture Teams and Outlook web message events and forward them to the local Pager bridge.",
-  "background": { "service_worker": "background.js" },
-  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
-  "content_scripts": [
-    {
-      "matches": [
-        "https://teams.microsoft.com/*",
-        "https://*.teams.microsoft.com/*",
-        "https://*.cloud.microsoft/*",
-        "https://outlook.office.com/*",
-        "https://outlook.office365.com/*",
-        "https://outlook.cloud.microsoft/*"
-      ],
-      "js": ["main-capture.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": [
-        "https://teams.microsoft.com/*",
-        "https://*.teams.microsoft.com/*",
-        "https://*.cloud.microsoft/*",
-        "https://outlook.office.com/*",
-        "https://outlook.office365.com/*",
-        "https://outlook.cloud.microsoft/*"
-      ],
-      "js": ["relay.js"],
-      "run_at": "document_start",
-      "world": "ISOLATED"
-    }
-  ]
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["storage", "scripting", "alarms"],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://teams.microsoft.com/*",
+    "https://*.teams.microsoft.com/*",
+    "https://teams.cloud.microsoft/*",
+    "https://outlook.office.com/*",
+    "https://outlook.office365.com/*",
+    "https://outlook.cloud.microsoft/*"
+  ],
+  "action": { "default_popup": "popup.html", "default_title": "Pager" },
+  "options_ui": { "page": "options.html", "open_in_tab": true }
 }

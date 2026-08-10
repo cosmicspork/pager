@@ -1,0 +1,147 @@
+/* Shared chrome for the popup and the options page. Same phosphor LCD as the
+   PWA (pwa/index.html), minus the scanlines and the backlight sweep — this is
+   a settings surface, not the device. System monospace rather than shipping
+   the VT323 face into the extension bundle. */
+
+:root {
+  --lcd-bg:   #07130c;
+  --lcd-bg2:  #0a1a10;
+  --phos:     #8dffb0;
+  --phos-mid: #57d98a;
+  --phos-dim: #3a7d54;
+  --rule:     rgba(141, 255, 176, 0.22);
+  --amber:    #ffc24b;
+  --glow:     0 0 6px rgba(141, 255, 176, 0.4), 0 0 1px rgba(141, 255, 176, 0.9);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 14px 16px 16px;
+  background: radial-gradient(120% 80% at 50% -10%, var(--lcd-bg2) 0%, var(--lcd-bg) 55%, #050d08 100%);
+  color: var(--phos);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+h1 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  text-shadow: var(--glow);
+}
+
+.sub { margin: 0 0 12px; color: var(--phos-dim); font-size: 11px; }
+
+h2 {
+  margin: 16px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--phos-mid);
+}
+
+/* a row is one setting: label + control, control right-aligned */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+}
+.row label { cursor: pointer; }
+.row .name { display: block; }
+.hint {
+  display: block;
+  margin-top: 1px;
+  color: var(--phos-dim);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* switch: an LCD segment that lights when on */
+input[type="checkbox"] {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 18px;
+  margin: 0;
+  border: 1px solid var(--phos-dim);
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+}
+input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: var(--phos-dim);
+  transition: transform 0.12s linear, background 0.12s linear;
+}
+input[type="checkbox"]:checked { border-color: var(--phos); }
+input[type="checkbox"]:checked::after {
+  transform: translateX(16px);
+  background: var(--phos);
+  box-shadow: var(--glow);
+}
+input[type="checkbox"]:disabled { opacity: 0.4; cursor: default; }
+input[type="checkbox"]:focus-visible { outline: 1px solid var(--phos); outline-offset: 2px; }
+
+input[type="text"], input[type="number"] {
+  border: 1px solid var(--rule);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--phos);
+  font: inherit;
+  padding: 4px 6px;
+}
+input[type="text"]:focus, input[type="number"]:focus {
+  outline: none;
+  border-color: var(--phos);
+}
+input[type="number"] { width: 78px; }
+input[type="text"] { width: 100%; }
+input.invalid { border-color: var(--amber); color: var(--amber); }
+
+.field { padding: 5px 0; }
+.field .name { display: block; margin-bottom: 4px; }
+
+button {
+  border: 1px solid var(--phos-dim);
+  background: transparent;
+  color: var(--phos);
+  font: inherit;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--phos); box-shadow: var(--glow); }
+button:focus-visible { outline: 1px solid var(--phos); outline-offset: 2px; }
+
+.status {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+  font-size: 11px;
+  color: var(--phos-dim);
+}
+.status div { display: flex; justify-content: space-between; gap: 10px; }
+.status .val { color: var(--phos-mid); }
+.status .val.warn { color: var(--amber); }
+
+.footer { margin-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.saved { color: var(--phos-mid); font-size: 11px; opacity: 0; transition: opacity 0.15s linear; }
+.saved.show { opacity: 1; }
+
+a { color: var(--phos-mid); }

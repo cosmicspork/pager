@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Pager</title>
+  <link rel="stylesheet" href="ui.css" />
+  <style>body { width: 300px; }</style>
+</head>
+<body>
+  <h1>Pager</h1>
+  <p class="sub">capture &amp; presence</p>
+
+  <h2>Capture</h2>
+  <div class="row">
+    <label for="captureTeams"><span class="name">Teams</span></label>
+    <input type="checkbox" id="captureTeams" />
+  </div>
+  <div class="row">
+    <label for="captureOutlook"><span class="name">Outlook</span></label>
+    <input type="checkbox" id="captureOutlook" />
+  </div>
+
+  <h2>Presence</h2>
+  <div class="row">
+    <label for="keepActive">
+      <span class="name">Keep Teams active</span>
+      <span class="hint" id="keepActiveHint"></span>
+    </label>
+    <input type="checkbox" id="keepActive" />
+  </div>
+
+  <div class="status">
+    <div><span>bridge</span><span class="val" id="stBridge">—</span></div>
+    <div><span>last event</span><span class="val" id="stLast">—</span></div>
+    <div><span>forwarded</span><span class="val" id="stCount">—</span></div>
+  </div>
+
+  <div class="footer">
+    <button id="options">Settings</button>
+    <span class="saved" id="saved">saved</span>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

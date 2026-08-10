@@ -25,7 +25,8 @@ relay never holds a key that can read a message or forge an enrollment.
 
 - `proto/` — shared wire contract: sealed-blob framing, relay-auth headers, and
   the device/notify JSON shapes used by the relay, bridge, and WASM.
-- `extension/` — Chrome MV3 capture extension. Posts events to the bridge.
+- `extension/` — Chrome MV3 capture extension. Posts events to the bridge and
+  can optionally simulate Teams activity. Toggles are in its popup/options page.
 - `bridge/` — Rust local bridge: holds the keys, seals + signs + runs the rules,
   drives QR pairing, forwards ciphertext to the relay.
 - `relay/` — Rust (Axum) relay: subscriptions + Web Push fan-out, ciphertext only.
@@ -91,6 +92,11 @@ pager-bridge ping    # confirms the relay is reachable and trusts this bridge
 `chrome://extensions` → enable Developer mode → **Load unpacked** → select
 `extension/`. Stay signed into Teams/Outlook web. The extension posts captured
 events to the bridge on `127.0.0.1:4500`.
+
+Its toolbar popup toggles Teams capture, Outlook capture, and *keep Teams
+active* (off by default — sends best-effort synthetic activity while the tab is
+open), and shows whether the bridge is reachable. The options page has the
+pulse interval and the capture endpoint. See `extension/README.md`.
 
 **3. Install the PWA on your phone.** In Safari (iOS) open
 `https://pager.0x69.xyz`, then Share → **Add to Home Screen**. Open the installed
