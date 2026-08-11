@@ -10,6 +10,21 @@ export const DEFAULTS = {
   captureTeams: true,
   captureOutlook: true,
 
+  // What Teams traffic is worth a page, per conversation kind. Teams' own
+  // `type` field is the discriminator: Chat covers both 1:1 and group, Topic
+  // and Space are channels, Meeting is a meeting's chat.
+  //
+  // Meetings default off because a busy meeting chat is a lot of traffic that
+  // is rarely worth a phone buzz, and nothing else in the app makes that
+  // choice visible — so it is a setting rather than a silent rule.
+  teamsChatsMode: 'all',
+  teamsChannelsMode: 'mentions',
+  teamsMeetingsMode: 'off',
+
+  // Your own messages arrive in the store the same as anyone else's, and
+  // paging yourself for something you just typed is never useful.
+  teamsMuteSelf: true,
+
   // Keep the Teams web app from reporting you idle/away.
   keepActive: false,
   keepActiveIntervalSec: 240,
@@ -38,6 +53,10 @@ export const OUTLOOK_MATCHES = [
   'https://outlook.cloud.microsoft/*',
 ];
 
+// Per-kind capture modes. 'mentions' only means anything where Teams tells us
+// who was mentioned, which is every conversation kind.
+export const CAPTURE_MODES = ['off', 'mentions', 'all'];
+
 // Teams flips to Away at ~5 minutes idle, so the useful range sits under that.
 // The ceiling is only there to keep a typo from silently disabling the pulse.
 export const INTERVAL_MIN_SEC = 30;
@@ -63,12 +82,17 @@ export function isValidBridgeUrl(value) {
 // back into range instead of trusting what comes out.
 export function normalize(raw) {
   const s = { ...DEFAULTS, ...(raw || {}) };
+  const mode = (v, fallback) => (CAPTURE_MODES.includes(v) ? v : fallback);
   const out = {
     captureTeams: !!s.captureTeams,
     captureOutlook: !!s.captureOutlook,
     keepActive: !!s.keepActive,
     keepActiveMask: !!s.keepActiveMask,
     diagnostics: !!s.diagnostics,
+    teamsChatsMode: mode(s.teamsChatsMode, DEFAULTS.teamsChatsMode),
+    teamsChannelsMode: mode(s.teamsChannelsMode, DEFAULTS.teamsChannelsMode),
+    teamsMeetingsMode: mode(s.teamsMeetingsMode, DEFAULTS.teamsMeetingsMode),
+    teamsMuteSelf: !!s.teamsMuteSelf,
     keepActiveIntervalSec: DEFAULTS.keepActiveIntervalSec,
     bridgeUrl: DEFAULTS.bridgeUrl,
   };

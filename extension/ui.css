@@ -98,20 +98,26 @@ input[type="checkbox"]:checked::after {
 input[type="checkbox"]:disabled { opacity: 0.4; cursor: default; }
 input[type="checkbox"]:focus-visible { outline: 1px solid var(--phos); outline-offset: 2px; }
 
-input[type="text"], input[type="number"] {
+input[type="text"], input[type="number"], select {
   border: 1px solid var(--rule);
   background: rgba(0, 0, 0, 0.35);
   color: var(--phos);
   font: inherit;
   padding: 4px 6px;
 }
-input[type="text"]:focus, input[type="number"]:focus {
+input[type="text"]:focus, input[type="number"]:focus, select:focus {
   outline: none;
   border-color: var(--phos);
 }
 input[type="number"] { width: 78px; }
 input[type="text"] { width: 100%; }
 input.invalid { border-color: var(--amber); color: var(--amber); }
+
+select { min-width: 220px; }
+/* The native menu renders in the OS palette, so options need an explicit
+   background or they come out unreadable against the phosphor theme. */
+select option { background: #0b0f0b; color: var(--phos); }
+select:disabled { opacity: 0.4; cursor: default; }
 
 .field { padding: 5px 0; }
 .field .name { display: block; margin-bottom: 4px; }

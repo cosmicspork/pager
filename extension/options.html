@@ -14,7 +14,7 @@
   <div class="row">
     <label for="captureTeams">
       <span class="name">Teams capture</span>
-      <span class="hint">Chat notifications, via the page's Notification API.</span>
+      <span class="hint">Messages, by reading the Teams web app's own store.</span>
     </label>
     <input type="checkbox" id="captureTeams" />
   </div>
@@ -29,6 +29,50 @@
     Off means the scripts are never injected — the extension registers content
     scripts from these toggles rather than loading them and checking a flag.
     Already-open tabs keep the old scripts until you reload them.
+  </p>
+
+  <h2>What Teams pages you for</h2>
+  <div class="field">
+    <label for="teamsChatsMode"><span class="name">Chats</span></label>
+    <select id="teamsChatsMode">
+      <option value="all">Every message</option>
+      <option value="mentions">Only when I'm mentioned</option>
+      <option value="off">Never</option>
+    </select>
+    <span class="hint">One-to-one and group chats.</span>
+  </div>
+  <div class="field">
+    <label for="teamsChannelsMode"><span class="name">Channels &amp; teams</span></label>
+    <select id="teamsChannelsMode">
+      <option value="all">Every message</option>
+      <option value="mentions">Only when I'm mentioned</option>
+      <option value="off">Never</option>
+    </select>
+    <span class="hint">
+      Mentions are read from Teams' own index, so one still reaches you after
+      other people have replied on top of it.
+    </span>
+  </div>
+  <div class="field">
+    <label for="teamsMeetingsMode"><span class="name">Meeting chats</span></label>
+    <select id="teamsMeetingsMode">
+      <option value="all">Every message</option>
+      <option value="mentions">Only when I'm mentioned</option>
+      <option value="off">Never</option>
+    </select>
+    <span class="hint">Busy during a call and rarely worth a buzz, so off by default.</span>
+  </div>
+  <div class="row">
+    <label for="teamsMuteSelf">
+      <span class="name">Mute my own messages</span>
+      <span class="hint">Your sent messages land in the same store as everyone else's.</span>
+    </label>
+    <input type="checkbox" id="teamsMuteSelf" />
+  </div>
+  <p class="hint">
+    Anything older than ten minutes is ignored regardless — Teams re-syncs a
+    pile of conversations on startup and on reconnect, and without that floor
+    every one of them would look new.
   </p>
 
   <h2>Keep Teams active</h2>

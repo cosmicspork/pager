@@ -10,7 +10,8 @@ import {
   isValidBridgeUrl,
 } from './settings.js';
 
-const BOOLS = ['captureTeams', 'captureOutlook', 'keepActive', 'keepActiveMask', 'diagnostics'];
+const BOOLS = ['captureTeams', 'captureOutlook', 'keepActive', 'keepActiveMask', 'diagnostics', 'teamsMuteSelf'];
+const MODES = ['teamsChatsMode', 'teamsChannelsMode', 'teamsMeetingsMode'];
 
 function flash() {
   const el = document.getElementById('saved');
@@ -21,21 +22,33 @@ function flash() {
 async function render() {
   const s = await getSettings();
   for (const key of BOOLS) document.getElementById(key).checked = s[key];
+  for (const key of MODES) document.getElementById(key).value = s[key];
   document.getElementById('keepActiveIntervalSec').value = s.keepActiveIntervalSec;
   document.getElementById('bridgeUrl').value = s.bridgeUrl;
   syncEnabled(s);
 }
 
-// The keep-active sub-settings only mean anything while the feature is on.
+// Sub-settings only mean anything while their feature is on.
 function syncEnabled(s) {
   const on = s.keepActive;
   document.getElementById('keepActiveIntervalSec').disabled = !on;
   document.getElementById('keepActiveMask').disabled = !on;
+  for (const key of [...MODES, 'teamsMuteSelf']) {
+    document.getElementById(key).disabled = !s.captureTeams;
+  }
 }
 
 for (const key of BOOLS) {
   document.getElementById(key).addEventListener('change', async (e) => {
     await setSettings({ [key]: e.target.checked });
+    flash();
+    await render();
+  });
+}
+
+for (const key of MODES) {
+  document.getElementById(key).addEventListener('change', async (e) => {
+    await setSettings({ [key]: e.target.value });
     flash();
     await render();
   });

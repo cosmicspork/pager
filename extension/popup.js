@@ -20,7 +20,8 @@ function ago(ts) {
 }
 
 async function renderStatus() {
-  const st = (await chrome.storage.session.get('status')).status || {};
+  const sess = await chrome.storage.session.get(['status', 'teamsHealth']);
+  const st = sess.status || {};
   const bridge = document.getElementById('stBridge');
   if (st.bridgeOk === undefined) {
     bridge.textContent = 'no events yet';
@@ -32,6 +33,24 @@ async function renderStatus() {
     bridge.textContent = st.bridgeError || 'unreachable';
     bridge.classList.add('warn');
   }
+  // Capture reporting in is the difference between "nobody messaged you" and
+  // "Teams moved its store and this has been dead for a week".
+  const teams = document.getElementById('stTeams');
+  const t = sess.teamsHealth;
+  if (!t) {
+    teams.textContent = 'no tab open';
+    teams.classList.remove('warn');
+  } else if (!t.ok) {
+    teams.textContent = 'failing';
+    teams.classList.add('warn');
+  } else if (Date.now() - t.at > 5 * 60 * 1000) {
+    teams.textContent = 'stale · ' + ago(t.at);
+    teams.classList.add('warn');
+  } else {
+    teams.textContent = `ok · ${t.conversations} convs · ${t.readMs}ms`;
+    teams.classList.remove('warn');
+  }
+
   document.getElementById('stLast').textContent =
     st.lastEventAt ? ago(st.lastEventAt) + (st.lastEventSource ? ' · ' + st.lastEventSource : '') : 'never';
   document.getElementById('stCount').textContent = st.forwarded || 0;

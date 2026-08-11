@@ -6,11 +6,52 @@ from reporting you idle. Replaces the Tampermonkey spikes in `../spike/`.
 
 ## What it captures
 
-- **Teams** — chat notifications, via the page-context `Notification` API
-  (`source: "teams"`, with `title` and `body`).
+- **Teams** — messages, by reading the conversation store the Teams web app
+  keeps in IndexedDB (`source: "teams"`, with `title`, `body`, `category`,
+  `conversationId`, `messageId`, `isMention`).
 - **Outlook** — new-mail events, by reading the `/owa/notificationchannel`
   SignalR-over-SSE stream and parsing `syncMessage` frames (`source: "outlook"`,
   with `sender`, `subject`, `unread`, `conversationId`, …).
+
+Teams capture used to wrap the page's `Notification` constructor. That only ever
+fired when Teams decided you were *not* looking at the tab — so turning on
+keep-active, whose mask exists to convince Teams of the opposite, silently
+killed Teams paging entirely. Reading the store does not depend on Teams
+choosing to notify, so the two features are no longer mutually exclusive.
+
+Teams runs its messaging stack in a Web Worker and never hands the page the
+message text, so there is nothing to hook in the MAIN world. IndexedDB is
+per-origin, so an ISOLATED-world content script on that origin reads the
+worker's store directly.
+
+### What gets paged
+
+Per conversation kind, using Teams' own `type` field — `Chat` covers 1:1 and
+group, `Topic`/`Space` are channels, `Meeting` is a meeting's chat. Each is
+`off` / `mentions` / `all`:
+
+| Kind | Default | |
+|---|---|---|
+| Chats | `all` | 1:1 and group |
+| Channels | `mentions` | only messages that @-mention you |
+| Meetings | `off` | busy and rarely worth a buzz; opt in if you want it |
+
+Your own messages are dropped (`teamsMuteSelf`), and anything older than ten
+minutes is ignored — Teams re-syncs a lot of conversations on startup and on
+reconnect, and without that floor every one of them looks new.
+
+Mentions come from two places, because neither alone is enough. The
+conversation store keeps only a single `lastMessage` per conversation, so a
+mention that other people reply on top of disappears from that view before the
+next poll sees it. Teams also keeps its own index of messages that mention you
+(`messaging-slice-manager` → `mentions-metadata-items`), which is read each
+tick; anything new there is resolved to its body through
+`replychain-manager` → `replychains` → `messageMap`. Both paths dedupe on the
+message id, so a mention that *is* the newest message is still one page.
+
+If the body cannot be resolved, the mention is still sent with the conversation
+named and a placeholder body — knowing you were mentioned is most of the value,
+and the app is one tap away.
 
 ## Keep Teams active
 
@@ -48,6 +89,10 @@ the popup):
 | Setting | Default | |
 |---|---|---|
 | Teams capture | on | inject the Teams capture script |
+| Chats | `all` | 1:1 and group chats — `off`/`mentions`/`all` |
+| Channels &amp; teams | `mentions` | channels and teams — `off`/`mentions`/`all` |
+| Meeting chats | `off` | meeting chats — `off`/`mentions`/`all` |
+| Mute my own messages | on | drop messages you sent |
 | Outlook capture | on | inject the Outlook capture script |
 | Keep Teams active | off | synthetic input pulses |
 | Pulse interval | 240s | clamped to 30–900s |
@@ -71,20 +116,45 @@ script. Already-open tabs keep whatever was injected at load; a settings change
 is also broadcast to them so keep-active picks it up live, but a capture toggle
 needs a reload to take effect there.
 
-Three worlds, because the page's CSP blocks both inline injection and a direct
-localhost fetch:
+Which world a script needs depends on whether it has to touch page objects:
 
+- `teams-idb.js` — **isolated** world, Teams hosts. Reads the page origin's
+  IndexedDB and talks to the service worker over `chrome.runtime` directly, so
+  it needs neither the MAIN world nor `relay.js`. Every few seconds it reads the
+  conversation store and diffs `lastMessageTimeUtc` per conversation. The read
+  costs single-digit to ~20 ms once warm.
+
+  It is tempting to gate that read on the cheap `conversations-internal-data`
+  watermark, and wrong: that watermark tracks sync *sessions*, not message
+  writes. Measured, its sync token still read an hour stale while a
+  just-arrived message sat in `conversations` — so gating on it drops live
+  messages.
 - `main-capture.js`, `keep-active.js`, `keep-active-mask.js` — the page's **MAIN**
   world, so they patch the objects the app actually calls and dispatch onto the
-  document it actually listens to. `main-capture.js` patches `Notification` on
-  all hosts and `fetch` on Outlook hosts only (the stream reader only matches
-  `/owa/notificationchannel`, and leaving the wrapper off Teams keeps it out of
-  Teams' own failed-fetch stack traces).
-- `relay.js` — **isolated** world; the only piece that can reach `chrome.*`.
-  Carries captured events out to the service worker and control messages
-  (keep-alive pokes, config changes) back into the page.
-- `background.js` — service worker; owns registrations, the keep-alive alarm, and
-  POSTing each event to the bridge. Extension fetch is exempt from the page CSP.
+  document it actually listens to. `main-capture.js` is now Outlook-only; it
+  patches `fetch` there to read the notification stream.
+- `relay.js` — **isolated** world, carrying MAIN-world messages out to the
+  service worker and control messages back in. Needed wherever a MAIN-world
+  script runs.
+- `background.js` — service worker; owns registrations, the alarm, and POSTing
+  each event to the bridge. Extension fetch is exempt from the page CSP.
+
+Chrome throttles a background tab's timers to about once a minute, which is
+exactly when paging matters, so the worker's alarm also pokes open Teams tabs to
+poll. (The throttle keys on whether the tab is really backgrounded, not on what
+keep-active's mask tells the page, so masking does not help here.)
+
+If Teams renames the store, capture would otherwise just go quiet — which looks
+identical to a slow day. `teams-idb.js` guards against that: a run of failed
+reads emits a `teams capture is failing` diagnostic (once, with a recovery note
+when reads resume), and a store it can read but no longer parse emits
+`found no usable conversations`. It also reports a heartbeat to the worker each
+minute — conversation count and read time — which the popup shows as the
+`teams capture` line (`ok · N convs · Nms`, or `stale`/`failing`). So "nothing
+came through" can be told apart from "the store moved". That heartbeat rides its
+own session-storage key and holds the worker's message channel open until the
+write lands, since a lone fire-and-forget write is otherwise lost when the
+worker suspends.
 
 `settings.js` is the shared contract (defaults, host lists, clamps) imported by
 the worker and both pages, so nothing re-derives them.
