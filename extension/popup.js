@@ -19,7 +19,7 @@ function ago(ts) {
   return Math.round(s / 3600) + 'h ago';
 }
 
-async function renderStatus() {
+async function renderStatus(s) {
   const sess = await chrome.storage.session.get(['status', 'teamsHealth']);
   const st = sess.status || {};
   const bridge = document.getElementById('stBridge');
@@ -37,7 +37,12 @@ async function renderStatus() {
   // "Teams moved its store and this has been dead for a week".
   const teams = document.getElementById('stTeams');
   const t = sess.teamsHealth;
-  if (!t) {
+  if (!s.captureTeams) {
+    // A warning about a capture the user turned off on purpose only teaches
+    // them to ignore the warning.
+    teams.textContent = 'off';
+    teams.classList.remove('warn');
+  } else if (!t) {
     teams.textContent = 'no tab open';
     teams.classList.remove('warn');
   } else if (!t.ok) {
@@ -61,7 +66,7 @@ async function render() {
   for (const key of TOGGLES) document.getElementById(key).checked = s[key];
   document.getElementById('keepActiveHint').textContent =
     'pulse every ' + s.keepActiveIntervalSec + 's' + (s.keepActiveMask ? ' · masking visibility' : '');
-  await renderStatus();
+  await renderStatus(s);
 }
 
 for (const key of TOGGLES) {

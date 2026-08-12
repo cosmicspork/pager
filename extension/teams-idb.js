@@ -47,17 +47,20 @@
   let failures = 0;
   let degraded = false;
   let shapeWarned = false;
+  let announced = false;
   let lastHealthAt = 0;
+  let lastHealthOk = null;
   let lastReadMs = 0;
+  let lastConvCount = 0;
   const lastSeen = new Map();
   const seenMentions = new Set();
   const emitted = new Set();
 
-  // Every set here is unbounded by nature — conversations come and go, mentions
-  // accumulate — so each gets trimmed oldest-first rather than growing for the
-  // life of the tab.
-  // .keys() rather than iterating directly, so this works for a Map as well as
-  // a Set — iterating a Map yields entries, which delete() would not match.
+  // Emitted keys and seen mention ids accumulate for the life of the tab, so
+  // each gets trimmed oldest-first. Both are Sets appended in first-seen order,
+  // so oldest genuinely is least relevant — unlike lastSeen, which is re-set on
+  // every tick and is pruned by store membership in tick() instead: a size trim
+  // there would rotate live watermarks out and silently drop their messages.
   function bound(store, max, keep) {
     if (store.size <= max) return;
     for (const k of [...store.keys()]) { store.delete(k); if (store.size <= keep) break; }
@@ -73,9 +76,20 @@
 
   const open = (name) => new Promise((res, rej) => {
     const r = indexedDB.open(name);
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error || new Error('open failed'));
-    setTimeout(() => rej(new Error('open timeout')), 5000);
+    let timedOut = false;
+    const t = setTimeout(() => { timedOut = true; rej(new Error('open timeout')); }, 5000);
+    r.onsuccess = () => {
+      clearTimeout(t);
+      const db = r.result;
+      // A connection that arrives after the timeout has no owner to close it,
+      // and an unclosed connection with no versionchange handler blocks the
+      // Teams app's own schema upgrades. Close it either way it goes stale:
+      // late arrival now, or an upgrade request while a read is in flight.
+      if (timedOut) { try { db.close(); } catch (e) {} return; }
+      db.onversionchange = () => { try { db.close(); } catch (e) {} };
+      res(db);
+    };
+    r.onerror = () => { clearTimeout(t); rej(r.error || new Error('open failed')); };
   });
 
   const readAll = (db, store) => new Promise((res, rej) => {
@@ -229,17 +243,22 @@
   }
 
   // Surfaced in the popup so "is this thing on?" has an answer that does not
-  // involve waiting for someone to message you.
+  // involve waiting for someone to message you. Called from the failure path
+  // too — otherwise a broken store never reports and the popup's 'failing'
+  // state is unreachable. A flip in either direction goes out immediately; the
+  // throttle only paces repeats of the same state.
   async function reportHealth(conversations) {
     const now = Date.now();
-    if (now - lastHealthAt < HEALTH_INTERVAL_MS) return;
+    const ok = !degraded;
+    if (ok === lastHealthOk && now - lastHealthAt < HEALTH_INTERVAL_MS) return;
     lastHealthAt = now;
+    lastHealthOk = ok;
     try {
       // Awaited so the sender holds the port open too; the worker keeps its own
       // side alive by returning true and answering once the write lands.
       await chrome.runtime.sendMessage({
         type: 'pager-health',
-        health: { ok: !degraded, conversations, readMs: lastReadMs, at: now },
+        health: { ok, conversations, readMs: lastReadMs, at: now },
       });
     } catch (e) {}
   }
@@ -275,37 +294,51 @@
     // The slice is populated on load, so the first pass is only a baseline.
     if (!mentionsPrimed) { mentionsPrimed = true; return; }
 
+    // The replychains store holds message bodies for every synced thread, so
+    // it is by far the most expensive read here. Load it at most once per
+    // pass, and only if a mention actually needs resolving.
+    let chains = null;
+    const loadChains = async () => {
+      if (chains) return chains;
+      chains = [];
+      if (!chainDbName) return chains;
+      try {
+        const db = await open(chainDbName);
+        try { chains = await readAll(db, STORE_CHAINS); } finally { db.close(); }
+      } catch (e) {}
+      return chains;
+    };
+
     for (const m of fresh) {
       if (!isRecent(null, m.timestamp)) continue;
       const conv = convs.find((c) => c.id === m.sourceThreadId);
       if (!conv) continue;
       if (modeFor(classify(conv)) === 'off') continue;
 
-      const message = await resolveMessage(conv, m);
+      const message = await resolveMessage(conv, m, loadChains);
+      // Same guard the conversation path applies in shouldEmit(): a mention
+      // inside your own message is not worth a page.
+      if (settings.teamsMuteSelf && me && message && message.fromUserId === me) continue;
       // Better a page naming the conversation than none at all: knowing you
-      // were mentioned is most of the value, and the app is one tap away.
-      emit(toEvent(conv, message || { imdisplayname: null, content: '(mentioned you)' }, { isMention: true }));
+      // were mentioned is most of the value, and the app is one tap away. The
+      // placeholder carries the mention's own message id so two unresolved
+      // mentions in one conversation cannot collapse into a single page.
+      emit(toEvent(conv, message || { id: m.sourceMessageId || m.id, imdisplayname: null, content: '(mentioned you)' }, { isMention: true }));
     }
   }
 
-  async function resolveMessage(conv, mention) {
+  async function resolveMessage(conv, mention, loadChains) {
     const lm = conv.lastMessage;
     if (lm && String(lm.id) === String(mention.sourceMessageId)) return lm;
-    if (!chainDbName) return null;
-    try {
-      const db = await open(chainDbName);
-      try {
-        const chains = await readAll(db, STORE_CHAINS);
-        const chain = chains.find(
-          (c) => c.conversationId === mention.sourceThreadId &&
-            String(c.replyChainId) === String(mention.sourceReplyChainId),
-        );
-        if (!chain || !chain.messageMap) return null;
-        for (const v of Object.values(chain.messageMap)) {
-          if (v && String(v.id) === String(mention.sourceMessageId)) return v;
-        }
-      } finally { db.close(); }
-    } catch (e) {}
+    const chains = await loadChains();
+    const chain = chains.find(
+      (c) => c.conversationId === mention.sourceThreadId &&
+        String(c.replyChainId) === String(mention.sourceReplyChainId),
+    );
+    if (!chain || !chain.messageMap) return null;
+    for (const v of Object.values(chain.messageMap)) {
+      if (v && String(v.id) === String(mention.sourceMessageId)) return v;
+    }
     return null;
   }
 
@@ -324,7 +357,21 @@
   }
 
   async function tick() {
-    if (!settings.captureTeams || !convDbName) return;
+    if (!settings.captureTeams) return;
+
+    // Teams creates its databases lazily, so on a fresh profile (or after a
+    // site-data clear) they may not exist yet when this script lands. A single
+    // shot at discovery would leave capture dead for the tab's lifetime; keep
+    // looking instead — databases() is one cheap call per tick, and the slice
+    // and replychain stores can also show up later than conversations.
+    if (!convDbName || !sliceDbName || !chainDbName) {
+      try { await discover(); } catch (e) {}
+      if (!convDbName) return;
+    }
+    if (!announced) {
+      announced = true;
+      diag('pager teams capture installed', 'host=' + location.host + ' me=' + (me ? 'ok' : 'unknown'));
+    }
 
     // Every tick reads the whole store. The obvious optimisation -- gate on the
     // cheap `conversations-internal-data` watermark and only read on change --
@@ -341,9 +388,11 @@
       rows = await readConversations();
     } catch (e) {
       noteFailure('conversations', e);
+      reportHealth(lastConvCount);
       return;
     }
     lastReadMs = Date.now() - started;
+    lastConvCount = rows.length;
     noteSuccess();
 
     const fresh = [];
@@ -364,7 +413,15 @@
       shapeWarned = true;
       diag('teams capture found no usable conversations', rows.length + ' records, none with lastMessageTimeUtc');
     }
-    bound(lastSeen, 2000, 1500);
+    // Forget only conversations gone from the store. Every live conversation
+    // was just re-set above, so insertion order says nothing about relevance —
+    // an oldest-first trim would rotate live watermarks out, and each victim
+    // re-baselines on its next message, silently dropping it.
+    if (lastSeen.size > dated) {
+      const current = new Set();
+      for (const c of rows) current.add(c.id);
+      for (const k of lastSeen.keys()) if (!current.has(k)) lastSeen.delete(k);
+    }
     reportHealth(rows.length);
 
     // The first pass only learns where every conversation stands. Emitting it
@@ -399,12 +456,12 @@
     try { ok = await discover(); } catch (e) {}
     if (!ok) {
       // Teams renaming its store would otherwise mean capture just goes quiet,
-      // which is indistinguishable from a slow day. Say so instead.
-      diag('teams capture cannot find its store', 'conversation-manager missing on ' + location.host);
-      return;
+      // which is indistinguishable from a slow day. Say so — but keep polling:
+      // on a fresh profile the app creates its databases *after* this script
+      // lands, and tick() retries discovery until they appear.
+      diag('teams capture cannot find its store', 'conversation-manager missing on ' + location.host + '; still looking');
     }
 
-    diag('pager teams capture installed', 'host=' + location.host + ' me=' + (me ? 'ok' : 'unknown'));
     await tick();
     setInterval(tick, TICK_MS);
   })();

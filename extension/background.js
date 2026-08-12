@@ -263,6 +263,11 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   const s = await settings();
   await syncRegistrations();
   await syncAlarm();
+  // Health is a claim about a capture that is now deliberately off; left in
+  // place it decays into a permanent 'stale' warning in the popup.
+  if (changes.captureTeams && changes.captureTeams.newValue === false) {
+    try { await chrome.storage.session.remove('teamsHealth'); } catch {}
+  }
   // Tabs already open still have the old scripts in them; tell them the new
   // config so a toggle takes effect without a reload.
   await broadcast(

@@ -31,11 +31,14 @@ function conversation({ id, type, from = THEM, content = 'hello', at = Date.now(
 
 // Runs the content script against a fake IndexedDB whose contents we control,
 // and hands back a way to advance the poll.
-async function runCapture(settings = {}) {
+async function runCapture(settings = {}, opts = {}) {
   const events = [];
   const diags = [];
   const health = [];
   const fail = { reads: false };
+  // Simulates a fresh profile: the app has not created its databases yet when
+  // the script lands. reveal() is the app catching up.
+  const stores = { hidden: !!opts.storesHidden };
   // Keyed by store name; the three stores the script reads live in different
   // databases but their names are distinct, so one map is enough.
   const rows = { conversations: [], 'mentions-metadata-items': [], replychains: [] };
@@ -51,11 +54,12 @@ async function runCapture(settings = {}) {
     JSON, Date, Math, Array, String, Number, Object, Boolean, Set, Map, Promise, Error,
     console: { log() {}, error() {} },
     queueMicrotask,
-    setTimeout: () => 0, // only used for read timeouts; never firing is correct here
+    setTimeout: () => 0, // only used for open/read timeouts; never firing is correct here
+    clearTimeout: () => {},
     setInterval: (fn) => { intervalFn = fn; return 0; },
     location: { host: 'teams.microsoft.com' },
     indexedDB: {
-      databases: async () => [
+      databases: async () => stores.hidden ? [] : [
         { name: DB_NAME },
         { name: DB_NAME.replace('conversation-manager', 'messaging-slice-manager') },
         { name: DB_NAME.replace('conversation-manager', 'replychain-manager') },
@@ -113,6 +117,7 @@ async function runCapture(settings = {}) {
     diags,
     health,
     fail,
+    reveal() { stores.hidden = false; },
     // First pass only learns where each conversation stands, so a caller has to
     // set a baseline before the change it wants to observe.
     async poll(conversations, extra = {}) {
@@ -259,10 +264,14 @@ test('says so when reads keep failing, instead of going quiet', async () => {
 
   const failing = cap.diags.filter((d) => /failing/.test(d.title));
   assert.equal(failing.length, 1, 'reports once, not once per tick');
+  // The popup's 'failing' line depends on health being reported from the
+  // failure path too, not only after a successful read.
+  assert.ok(cap.health.some((h) => h.ok === false), 'failure reaches the popup');
 
   cap.fail.reads = false;
   await cap.poll([conversation({ id: '19:g@thread.v2', type: 'Chat', at: Date.now() - 120000 })]);
   assert.equal(cap.diags.filter((d) => /recovered/.test(d.title)).length, 1);
+  assert.equal(cap.health.at(-1).ok, true, 'recovery flips health back without waiting out the throttle');
 });
 
 test('flags a store it can read but no longer understands', async () => {
@@ -285,4 +294,60 @@ test('leaves channel chatter alone when it does not mention you', async () => {
     await cap.poll([conversation({ id: '19:c@thread.tacv2', type: 'Topic', mentions })]);
     assert.equal(cap.events.length, 0, JSON.stringify(mentions));
   }
+});
+
+test('starts capturing when the store shows up after load', async () => {
+  // A fresh profile creates the databases after the script lands; a single
+  // shot at discovery would leave capture dead until a manual reload.
+  const cap = await runCapture({}, { storesHidden: true });
+  assert.ok(cap.diags.some((d) => /cannot find its store/.test(d.title)));
+
+  cap.reveal();
+  await cap.poll([conversation({ id: '19:g@thread.v2', type: 'Chat', at: Date.now() - 60000 })]);
+  await cap.poll([conversation({ id: '19:g@thread.v2', type: 'Chat', content: 'ping' })]);
+
+  assert.equal(cap.events.length, 1);
+  assert.equal(cap.events[0].body, 'ping');
+});
+
+test('does not page a mention inside your own message', async () => {
+  const CHAT = '19:g@thread.v2';
+  const cap = await runCapture();
+  const at = Date.now();
+  await cap.poll([conversation({ id: CHAT, type: 'Chat', at: at - 120000 })], { mentions: [], chains: [] });
+
+  // You mention yourself, buried under later chatter, so the mention index is
+  // the only path that sees it — it has to honor teamsMuteSelf like the
+  // conversation path does.
+  const buried = conversation({ id: CHAT, type: 'Chat', content: 'later chatter', at });
+  const mention = { id: '910001', sourceThreadId: CHAT, sourceMessageId: '910001', sourceReplyChainId: '810000', timestamp: at };
+  const chains = [{
+    conversationId: CHAT,
+    replyChainId: '810000',
+    messageMap: { a: { id: '910001', fromUserId: ME, imdisplayname: 'Josh Bowen', content: '<p>note to self</p>' } },
+  }];
+  await cap.poll([buried], { mentions: [mention], chains });
+
+  assert.equal(cap.events.filter((e) => e.isMention).length, 0);
+});
+
+test('pages both unresolved mentions in the same conversation', async () => {
+  const CHANNEL = '19:c@thread.tacv2';
+  const props = { threadProperties: { topic: 'MS365 - Support' } };
+  const cap = await runCapture();
+  const at = Date.now();
+  await cap.poll([conversation({ id: CHANNEL, type: 'Topic', at: at - 120000, ...props })], { mentions: [], chains: [] });
+
+  // Two mentions arrive between polls and neither body can be resolved; the
+  // placeholders must not share a message id, or the second dedupes away.
+  const after = conversation({ id: CHANNEL, type: 'Topic', content: 'later chatter', at, ...props });
+  const mentions = [
+    { id: '920001', sourceThreadId: CHANNEL, sourceMessageId: '920001', sourceReplyChainId: '820000', timestamp: at },
+    { id: '920002', sourceThreadId: CHANNEL, sourceMessageId: '920002', sourceReplyChainId: '820000', timestamp: at },
+  ];
+  await cap.poll([after], { mentions, chains: [] });
+
+  const paged = cap.events.filter((e) => e.isMention);
+  assert.equal(paged.length, 2);
+  assert.notEqual(paged[0].messageId, paged[1].messageId);
 });
