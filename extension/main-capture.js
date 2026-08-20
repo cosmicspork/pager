@@ -1,9 +1,14 @@
-// Runs in the page's MAIN world (declared in the manifest), so it patches the
-// objects the app actually calls without inline <script> injection — which
-// Teams' CSP blocks. It only reads; it never alters the app's behavior. Captured
-// events are posted to the isolated relay via window.postMessage; the relay and
-// service worker handle getting them to the local bridge (page CSP blocks a
-// direct localhost fetch from here).
+// Runs in the page's MAIN world (registered by background.js for Outlook hosts
+// only), so it patches the objects the app actually calls without inline
+// <script> injection. It only reads; it never alters the app's behavior.
+// Captured events are posted to the isolated relay via window.postMessage; the
+// relay and service worker handle getting them to the local bridge (page CSP
+// blocks a direct localhost fetch from here).
+//
+// Teams capture used to live here too, as a Notification-constructor wrapper.
+// That moved to teams-idb.js (reading the store directly); the wrapper is gone
+// rather than left in — on OWA it would fire on Outlook's own desktop
+// notifications and mislabel them source 'teams'.
 
 (function () {
   'use strict';
@@ -17,34 +22,16 @@
     } catch (e) {}
   }
 
-  // Teams posts chat notifications through the page-context Notification API.
-  try {
-    const N = window.Notification;
-    if (typeof N === 'function' && !N.__pagerWrapped) {
-      const Wrapped = new Proxy(N, {
-        construct(target, args) {
-          try {
-            const o = args[1] || {};
-            emit({ source: 'teams', title: String(args[0] == null ? '' : args[0]), body: o.body || null, tag: o.tag || null });
-          } catch (e) {}
-          return Reflect.construct(target, args);
-        },
-        get(target, prop) { const v = Reflect.get(target, prop); return typeof v === 'function' ? v.bind(target) : v; },
-      });
-      try { Object.defineProperty(Wrapped, '__pagerWrapped', { value: true }); } catch (e) {}
-      window.Notification = Wrapped;
-    }
-  } catch (e) {}
-
   // Outlook pushes new-mail events over /owa/notificationchannel as SignalR
   // over SSE: one long-lived streaming GET whose body is a sequence of
   // RS-terminated, "data:"-prefixed SignalR frames. We read the stream
   // incrementally, buffering across chunks since a frame can span reads.
   //
-  // The fetch patch below is gated to Outlook hosts: nothing on Teams matches
-  // that URL, so there the wrapper would sit in the hot path of every request
-  // and put this file at the top of every failed-fetch stack trace — which
-  // reads as "the extension broke Teams" when the failure is Teams' own.
+  // The fetch patch below stays gated to Outlook hosts even though
+  // registration is already Outlook-only: if this script ever lands anywhere
+  // else, the wrapper would sit in the hot path of every request and put this
+  // file at the top of every failed-fetch stack trace — which reads as "the
+  // extension broke the app" when the failure is the app's own.
   function handleFrame(frame) {
     let s = frame.trim();
     if (!s) return;

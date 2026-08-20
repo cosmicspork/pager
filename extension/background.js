@@ -32,16 +32,18 @@ async function settings() {
 // Chrome persists these across browser restarts and applies them at
 // document_start, same as a manifest-declared script.
 const REG_TEAMS_MAIN = 'pager-teams-main';
+const REG_TEAMS_CAPTURE = 'pager-teams-capture';
 const REG_OUTLOOK_MAIN = 'pager-outlook-main';
 const REG_BRIDGE = 'pager-bridge';
-const REG_IDS = [REG_TEAMS_MAIN, REG_OUTLOOK_MAIN, REG_BRIDGE];
+const REG_IDS = [REG_TEAMS_MAIN, REG_TEAMS_CAPTURE, REG_OUTLOOK_MAIN, REG_BRIDGE];
 
 function desiredRegistrations(s) {
-  // Order is execution order. The mask patches the APIs Teams reads on
-  // startup, so it goes first.
+  // Teams capture reads IndexedDB, which the isolated world can reach on the
+  // page's origin, so it needs neither the MAIN world nor relay.js — it talks
+  // to this worker over chrome.runtime directly. Only keep-active still patches
+  // page objects, and only for Teams.
   const teamsMain = [];
   if (s.keepActive && s.keepActiveMask) teamsMain.push('keep-active-mask.js');
-  if (s.captureTeams) teamsMain.push('main-capture.js');
   if (s.keepActive) teamsMain.push('keep-active.js');
 
   const outlookMain = s.captureOutlook ? ['main-capture.js'] : [];
@@ -54,6 +56,17 @@ function desiredRegistrations(s) {
       js: teamsMain,
       runAt: 'document_start',
       world: 'MAIN',
+    });
+  }
+  if (s.captureTeams) {
+    // document_idle, not document_start: there is no page global to get ahead
+    // of, and the store is not worth reading before the app has opened it.
+    regs.push({
+      id: REG_TEAMS_CAPTURE,
+      matches: TEAMS_MATCHES,
+      js: ['teams-idb.js'],
+      runAt: 'document_idle',
+      world: 'ISOLATED',
     });
   }
   if (outlookMain.length) {
@@ -100,15 +113,18 @@ async function syncRegistrations() {
 // keep-alive poke
 // ---------------------------------------------------------------------------
 
-// Chrome throttles page timers in background tabs, which is exactly where the
-// pulse matters. An alarm in the worker is not throttled the same way, so it
-// pokes the open Teams tabs; the page also runs its own timer and ignores
-// whichever of the two arrives early.
+// Chrome throttles page timers in background tabs, which is exactly where both
+// the keep-active pulse and the capture poll matter. An alarm in the worker is
+// not throttled the same way, so it pokes the open Teams tabs; each tab also
+// runs its own timer and ignores whichever of the two arrives early.
+//
+// Note the throttling keys on whether the tab is really backgrounded, not on
+// what keep-active's mask tells the page — so masking does not help here.
 const ALARM_KEEPALIVE = 'pager-keepalive';
 
 async function syncAlarm() {
   const s = await settings();
-  if (s.keepActive) {
+  if (s.keepActive || s.captureTeams) {
     await chrome.alarms.create(ALARM_KEEPALIVE, { periodInMinutes: 1 });
   } else {
     await chrome.alarms.clear(ALARM_KEEPALIVE);
@@ -132,8 +148,8 @@ async function broadcast(msg, matches) {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== ALARM_KEEPALIVE) return;
   const s = await settings();
-  if (!s.keepActive) return;
-  await broadcast({ type: 'pager-control', control: 'pulse' }, TEAMS_MATCHES);
+  if (s.keepActive) await broadcast({ type: 'pager-control', control: 'pulse' }, TEAMS_MATCHES);
+  if (s.captureTeams) await broadcast({ type: 'pager-control', control: 'poll' }, TEAMS_MATCHES);
 });
 
 // ---------------------------------------------------------------------------
@@ -143,12 +159,18 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // The notification channel re-emits the same conversation several times (read
 // syncs, unread-count flaps). Collapse repeats by conversation + delivery time
 // within a short window so one new message is one event.
+//
+// Teams events carry a real message id, so they collapse on that rather than on
+// title/body — otherwise two identical short replies ("ok") in the same chat
+// would read as a duplicate and the second would be dropped.
 const recent = new Map();
 function isDuplicate(ev) {
   if (!ev || ev.source === '__diag') return false;
   const now = ev.ts || Date.now();
   for (const [k, t] of recent) if (now - t > DEDUP_TTL_MS) recent.delete(k);
-  const sig = [ev.source, ev.conversationId || ev.tag || '', ev.lastDelivery || '', ev.title || '', ev.body || ''].join('|');
+  const sig = ev.messageId
+    ? [ev.source, ev.conversationId || '', ev.messageId].join('|')
+    : [ev.source, ev.conversationId || ev.tag || '', ev.lastDelivery || '', ev.title || '', ev.body || ''].join('|');
   if (recent.has(sig)) return true;
   recent.set(sig, now);
   return false;
@@ -198,6 +220,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     forward(msg.ev);
     return;
   }
+  if (msg.type === 'pager-health') {
+    // Its own key, not merged into `status`: forward() rewrites `status` on
+    // every event with a read-modify-write, and a health merge racing that
+    // loses the teams field to the clobber. A whole-value set on a dedicated
+    // key has nothing to race.
+    //
+    // Returning true holds the message channel — and so the worker — open until
+    // sendResponse. Without it the worker can suspend after this listener
+    // returns but before the async set flushes, and the write is lost. Event
+    // forwarding gets away with fire-and-forget only because its fetch keeps the
+    // worker alive; a lone health write has nothing holding it.
+    chrome.storage.session.set({ teamsHealth: msg.health }).finally(() => sendResponse());
+    return true;
+  }
   if (msg.type === 'pager-get-config') {
     // Async reply, so the channel has to be held open.
     settings().then((s) =>
@@ -205,6 +241,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         keepActive: s.keepActive,
         keepActiveIntervalSec: s.keepActiveIntervalSec,
         keepActiveMask: s.keepActiveMask,
+        captureTeams: s.captureTeams,
+        teamsChatsMode: s.teamsChatsMode,
+        teamsChannelsMode: s.teamsChannelsMode,
+        teamsMeetingsMode: s.teamsMeetingsMode,
+        teamsMuteSelf: s.teamsMuteSelf,
       }),
     );
     return true;
@@ -222,6 +263,11 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   const s = await settings();
   await syncRegistrations();
   await syncAlarm();
+  // Health is a claim about a capture that is now deliberately off; left in
+  // place it decays into a permanent 'stale' warning in the popup.
+  if (changes.captureTeams && changes.captureTeams.newValue === false) {
+    try { await chrome.storage.session.remove('teamsHealth'); } catch {}
+  }
   // Tabs already open still have the old scripts in them; tell them the new
   // config so a toggle takes effect without a reload.
   await broadcast(
@@ -232,6 +278,11 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
         keepActive: s.keepActive,
         keepActiveIntervalSec: s.keepActiveIntervalSec,
         keepActiveMask: s.keepActiveMask,
+        captureTeams: s.captureTeams,
+        teamsChatsMode: s.teamsChatsMode,
+        teamsChannelsMode: s.teamsChannelsMode,
+        teamsMeetingsMode: s.teamsMeetingsMode,
+        teamsMuteSelf: s.teamsMuteSelf,
       },
     },
     [...TEAMS_MATCHES, ...OUTLOOK_MATCHES],

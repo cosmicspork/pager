@@ -11,7 +11,7 @@ phone.
 ```
 Chrome extension  →  local bridge (Rust)  →  homelab relay (Rust)  →  PWA (iOS/Android)
   capture events     seal + sign + rules     ciphertext only,           unseal in the
-  (Teams Notif. API,  (svastha-core),         VAPID Web Push fan-out      service worker,
+  (Teams IndexedDB,  (svastha-core),         VAPID Web Push fan-out      service worker,
    OWA SignalR)       QR device pairing       (zero-knowledge)            showNotification
 ```
 
@@ -27,6 +27,9 @@ relay never holds a key that can read a message or forge an enrollment.
   the device/notify JSON shapes used by the relay, bridge, and WASM.
 - `extension/` — Chrome MV3 capture extension. Posts events to the bridge and
   can optionally simulate Teams activity. Toggles are in its popup/options page.
+  Teams capture reads the app's own IndexedDB store (Teams keeps its messaging
+  stack in a Web Worker and never hands the page the text, and the old
+  `Notification` hook went silent whenever keep-active was on).
 - `bridge/` — Rust local bridge: holds the keys, seals + signs + runs the rules,
   drives QR pairing, forwards ciphertext to the relay.
 - `relay/` — Rust (Axum) relay: subscriptions + Web Push fan-out, ciphertext only.
