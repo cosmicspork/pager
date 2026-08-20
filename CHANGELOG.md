@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/cosmicspork/pager/compare/v0.3.0...v0.4.0) (2026-08-20)
+
+
+### Features
+
+* **extension:** capture Teams from IndexedDB with per-kind filtering ([17fb8bc](https://github.com/cosmicspork/pager/commit/17fb8bc06788d8a448b93fb1f5facd9002ca868d))
+* **extension:** keep-active for Teams, plus settings and injection toggles ([7ef9bc3](https://github.com/cosmicspork/pager/commit/7ef9bc3278809053eb67371c5699c91dbdc9d199))
+
+
+### Bug Fixes
+
+* **extension:** harden Teams IndexedDB capture from code review ([c498769](https://github.com/cosmicspork/pager/commit/c49876906f5dad779f56a38f0b8cebb7df02816d))
+* **extension:** make activity simulation transparent ([60c4ea6](https://github.com/cosmicspork/pager/commit/60c4ea614bd81abde7fbefb0a0027ed27803c9e4))
+* **extension:** patch fetch only on Outlook hosts ([977327a](https://github.com/cosmicspork/pager/commit/977327afebf04f1b96aa2f8d574f73c400c0bdff))
+* **extension:** patch fetch only on Outlook hosts ([3917d6c](https://github.com/cosmicspork/pager/commit/3917d6cd3c9d4b115e29e933b5d89599b14a8bf1))
+* **extension:** stop the mask swallowing every focus and blur ([694a1a1](https://github.com/cosmicspork/pager/commit/694a1a1ebadd3b1e4c453ad11fa82e4d26911635))
+
 ## [0.3.0](https://github.com/cosmicspork/pager/compare/v0.2.0...v0.3.0) (2026-06-29)
 
 
