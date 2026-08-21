@@ -132,6 +132,26 @@ notifications for your *own* messages — test with a message from someone else.
 
 ## Delivery health
 
+When the phone is quiet, start here:
+
+```bash
+pager-bridge doctor          # walk the whole chain; --test also sends a push
+```
+
+It checks each link in order — capture server, relay reachability, contract
+version, bridge authentication, quiet hours, paired devices, and each device's
+delivery state — and prints a verdict per line, exiting non-zero if anything is
+outright broken. The first ✗ or ⚠ is the answer.
+
+```
+✓ capture server            listening on 127.0.0.1:4500
+✓ relay reachable           https://pager.0x69.xyz
+✓ relay trusts this bridge  ed25519 f3797abfe2eefceb
+✓ quiet hours               not configured
+✓ devices                   1 paired
+✗ device                    iPhone (d50779de)  Pages are arriving but alerts are switched off on the device.
+```
+
 `sent=1 failed=0` means the *push service* accepted the message. It says nothing
 about whether a human saw it: between the relay and a banner sit the device's
 service worker and the OS notification permission, either of which can fail

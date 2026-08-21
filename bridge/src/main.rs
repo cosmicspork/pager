@@ -6,9 +6,11 @@
 //! ciphertext to the relay for Web Push fan-out. It also drives QR device pairing
 //! and registers device subscriptions with the relay on the device's behalf.
 //!
-//! Subcommands: `run` (default), `pair`, `test`, `devices`, `unpair`, `id`.
+//! Subcommands: `run` (default), `pair`, `test`, `devices`, `unpair`, `id`,
+//! `ping`, `doctor`.
 
 mod client;
+mod doctor;
 mod health;
 mod store;
 
@@ -61,6 +63,13 @@ enum Cmd {
     Id,
     /// Check the relay is reachable and accepts this bridge's authentication.
     Ping,
+    /// Walk the whole capture → bridge → relay → device chain and report what's
+    /// broken. Exits non-zero on a failure.
+    Doctor {
+        /// Also send a real test push at the end.
+        #[arg(long)]
+        test: bool,
+    },
 }
 
 struct Config {
@@ -102,6 +111,11 @@ async fn main() -> Result<()> {
         Cmd::Test { message } => cmd_test(&http, &identity, &cfg, &dir, &message).await?,
         Cmd::Unpair { id } => cmd_unpair(&http, &identity, &cfg, &dir, &id).await?,
         Cmd::Ping => cmd_ping(&http, &identity, &cfg).await?,
+        Cmd::Doctor { test } => {
+            if !cmd_doctor(&http, &identity, &cfg, &dir, test).await? {
+                std::process::exit(1);
+            }
+        }
         Cmd::Run => cmd_run(http, identity, cfg, dir).await?,
     }
     Ok(())
@@ -149,6 +163,61 @@ fn date(t: u64) -> String {
     DateTime::from_timestamp(t as i64, 0)
         .map(|d| d.with_timezone(&Local).format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| t.to_string())
+}
+
+/// Walk the chain in order and print a verdict per link. Each step is
+/// independent: a dead relay still reports on the capture server and the local
+/// device list, because knowing which links are fine is half the diagnosis.
+async fn cmd_doctor(http: &Client, id: &Identity, cfg: &Config, dir: &Path, send_test: bool) -> Result<bool> {
+    use doctor::{Check, Level};
+
+    println!("relay {}\n", cfg.relay);
+    let mut checks = vec![doctor::check_capture(http, &cfg.capture_addr).await];
+
+    let config_url = format!("{}/api/config", cfg.relay.trim_end_matches('/'));
+    let relay_config = http.get(&config_url).send().await.ok();
+    match relay_config {
+        Some(r) if r.status().is_success() => {
+            let v: Value = r.json().await.unwrap_or(Value::Null);
+            checks.push(Check::ok("relay reachable", cfg.relay.clone()));
+            checks.push(doctor::check_contract(v.get("contractVersion").and_then(|x| x.as_u64())));
+        }
+        Some(r) => checks.push(Check::fail("relay reachable", format!("{} answered {}", cfg.relay, r.status()))),
+        None => checks.push(Check::fail("relay reachable", format!("{} is unreachable", cfg.relay))),
+    }
+
+    // A signed GET that 404s proves auth passed; 401/503 means it did not.
+    let authed = client::fetch_pairing(http, id, &cfg.relay, &random_token()).await.is_ok();
+    checks.push(if authed {
+        Check::ok("relay trusts this bridge", format!("ed25519 {}", &hex::encode(id.verifying_key().to_bytes())[..16]))
+    } else {
+        Check::fail("relay trusts this bridge", "authentication rejected — check PAGER_BRIDGE_PUBKEY on the relay")
+    });
+
+    checks.push(doctor::check_quiet(cfg.quiet, Local::now().hour()));
+
+    let devices = store::load_devices(dir)?;
+    let status = if authed { client::devices(http, id, &cfg.relay).await.ok().flatten() } else { None };
+    checks.extend(doctor::check_devices(&devices, status.as_deref(), client::now_secs()));
+
+    if send_test && !devices.devices.is_empty() {
+        let notif = Notif {
+            title: "Pager test".into(),
+            body: "doctor".into(),
+            source: "test".into(),
+            ts: now_ms(),
+        };
+        checks.push(match build_deliveries(&devices.devices, &notif) {
+            Err(e) => Check::fail("test push", e.to_string()),
+            Ok(d) => match client::notify(http, id, &cfg.relay, d).await {
+                Err(e) => Check::fail("test push", e.to_string()),
+                Ok(r) if r.failed > 0 => Check::new("test push", Level::Warn, format!("sent={} failed={}", r.sent, r.failed)),
+                Ok(r) => Check::ok("test push", format!("accepted for {} device(s) — watch for it on the phone", r.sent)),
+            },
+        });
+    }
+
+    Ok(doctor::report(&checks))
 }
 
 async fn cmd_devices(http: &Client, id: &Identity, cfg: &Config, dir: &Path) -> Result<()> {
@@ -477,7 +546,7 @@ fn event_to_notif(ev: &Value, quiet: Option<(u32, u32)>) -> Option<Notif> {
     Some(Notif { title, body, source, ts })
 }
 
-fn in_quiet(h: u32, start: u32, end: u32) -> bool {
+pub(crate) fn in_quiet(h: u32, start: u32, end: u32) -> bool {
     if start <= end { h >= start && h < end } else { h >= start || h < end }
 }
 
