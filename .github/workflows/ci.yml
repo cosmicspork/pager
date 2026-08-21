@@ -25,8 +25,8 @@ jobs:
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: extension tests
-        run: node --test extension/test/*.test.mjs
+      - name: extension + pwa tests
+        run: node --test extension/test/*.test.mjs pwa/test/*.test.mjs
       # default-members is proto/relay/bridge (the wasm crate only builds for
       # wasm32, so it's checked separately below).
       - name: clippy

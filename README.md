@@ -130,6 +130,8 @@ notifications for your *own* messages — test with a message from someone else.
 
 ```bash
 cargo test                                   # proto + bridge unit + integration
+node --test extension/test/*.test.mjs \
+     pwa/test/*.test.mjs                     # extension + service-worker tests
 wasm-pack build wasm --target no-modules \
   --out-dir pwa/wasm --out-name pager_wasm   # build the device WASM
 cargo run -p pager-relay                     # serves http://127.0.0.1:4500 (needs vapid.json)
