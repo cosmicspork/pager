@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0](https://github.com/cosmicspork/pager/compare/v0.4.0...v0.5.0) (2026-08-21)
+
+
+### Features
+
+* **bridge:** add a doctor command that walks the whole chain ([f4a7eb7](https://github.com/cosmicspork/pager/commit/f4a7eb71ef902f5b53029fdf8336e9a05f2b44c8))
+* make delivery observable end to end ([eda55d6](https://github.com/cosmicspork/pager/commit/eda55d6ecafebad681c833a005f54894ec594451))
+* **pwa:** surface alert permission and push subscription state ([09afcec](https://github.com/cosmicspork/pager/commit/09afcec87faf4fca66227cad48ada23f469a8497))
+
+
+### Bug Fixes
+
+* **pwa:** keep recording pushes when the alert can't be shown ([ab4b92f](https://github.com/cosmicspork/pager/commit/ab4b92f88c3f4f63efc997f2bd5700974a2cfc69))
+
 ## [0.4.0](https://github.com/cosmicspork/pager/compare/v0.3.0...v0.4.0) (2026-08-20)
 
 
