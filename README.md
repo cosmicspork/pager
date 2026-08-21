@@ -47,7 +47,7 @@ one it registered at enrollment.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/config` | public | VAPID public key, subject, contract version |
+| GET | `/api/config` | public | VAPID public key, subject, contract version, PWA build id |
 | POST | `/api/pair/:token` | public | device uploads an opaque enrollment blob |
 | GET | `/api/pair/:token` | bridge | fetch-and-delete that blob |
 | POST | `/api/subscribe` | bridge | register a device id → push subscription |
@@ -64,7 +64,12 @@ one it registered at enrollment.
   builds the WASM and the relay, serves `pwa/`). The VAPID private key is a
   SOPS-encrypted secret; the authorized bridge key is the `PAGER_BRIDGE_PUBKEY`
   env. Subscriptions persist to a PVC (`PAGER_SUBS_FILE`) so a restart keeps
-  devices registered.
+  devices registered. It hashes the PWA bundle at startup and serves the shell
+  with that id stamped onto the `app.js` URL, so a deploy invalidates the
+  browser's copy; every PWA response is `Cache-Control: no-cache`. The page
+  reports the build it is actually running, and says so when it no longer
+  matches the relay — an installed PWA that keeps serving old code otherwise
+  looks completely healthy.
 - **Bridge** runs on your machine as a `systemd --user` service
   (`contrib/pager-bridge.service`), listening on `127.0.0.1:4500` for the
   extension and forwarding to `PAGER_RELAY_URL`. It holds the paired-device

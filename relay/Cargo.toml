@@ -13,12 +13,16 @@ pager-proto = { path = "../proto" }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 parking_lot = "0.12"
-tower-http = { version = "0.6", features = ["fs", "cors"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
 web-push = "0.11"
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
+sha2 = "0.10"
 anyhow = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -195,6 +195,21 @@ function readyOrNull(ms = 3000) {
   ]);
 }
 
+// The build this page is running, read back off its own <script src>. The relay
+// stamps it there, so a client that never re-fetched app.js reports the old id
+// and stops being indistinguishable from a current one.
+const BUILD = (() => {
+  try { return new URL(document.currentScript.src).searchParams.get("v") || ""; }
+  catch { return ""; }
+})();
+
+async function serverBuild() {
+  try {
+    const r = await fetch("/api/config", { cache: "no-store" });
+    return (await r.json()).build || "";
+  } catch { return ""; }
+}
+
 async function health() {
   const perm = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
   let subscribed = null; // null = couldn't determine
@@ -207,6 +222,8 @@ async function health() {
     subscribed,
     at: await idbGet("last_push_at").catch(() => undefined),
     shown: await idbGet("last_push_shown").catch(() => undefined),
+    build: BUILD,
+    serverBuild: await serverBuild(),
   };
 }
 
@@ -222,6 +239,8 @@ function faultOf(h) {
     return { title: "Alerts off", hint: "Pages arrive but nothing will show on screen.", action: "enable" };
   if (h.subscribed === false)
     return { title: "Push lost", hint: "This device is no longer subscribed to the relay. Re-register to restore paging.", action: "repair" };
+  if (h.build && h.serverBuild && h.build !== h.serverBuild)
+    return { title: "Update waiting", hint: "This app is running older code. Close it completely and reopen." };
   if (h.shown === false)
     return { title: "Alerts not showing", hint: "The last page arrived but the device refused to display it." };
   return null;
@@ -235,6 +254,10 @@ async function renderHealth() {
   $("#lastPush").textContent = !h.at
     ? "never"
     : (ago === "now" ? ago : ago + " ago") + (h.shown === false ? " · not shown" : "");
+
+  $("#buildState").textContent = !h.build
+    ? "unknown"
+    : h.build.slice(0, 8) + (h.serverBuild && h.serverBuild !== h.build ? " · stale" : "");
 
   const fault = faultOf(h);
   const strip = $("#alert");

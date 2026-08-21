@@ -26,7 +26,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::{
     body::Bytes,
     extract::{OriginalUri, Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::Html,
     routing::{delete, get, post},
     Json, Router,
 };
@@ -34,7 +35,8 @@ use parking_lot::Mutex;
 use pager_proto::auth::{self, DEFAULT_WINDOW_SECS, HEADER_PUBKEY, HEADER_SIGNATURE, HEADER_TIMESTAMP};
 use pager_proto::{AckReq, Delivery, DeviceStatus, NotifyReq, NotifyResp, SubscribeReq, Subscription, SubscriptionKeys};
 use serde::{Deserialize, Serialize};
-use tower_http::{cors::CorsLayer, services::ServeDir};
+use sha2::{Digest, Sha256};
+use tower_http::{cors::CorsLayer, services::ServeDir, set_header::SetResponseHeaderLayer};
 use web_push::{
     ContentEncoding, IsahcWebPushClient, SubscriptionInfo, VapidSignatureBuilder, WebPushClient,
     WebPushError, WebPushMessageBuilder,
@@ -111,6 +113,9 @@ struct AppState {
     /// Optional JSON file the subscription map is persisted to so a relay restart
     /// keeps devices subscribed (set in production via a PVC).
     subs_file: Option<PathBuf>,
+    /// Content hash of the PWA bundle. The page reports the build it is running
+    /// so a stale client can name itself instead of silently misbehaving.
+    build: String,
 }
 
 #[tokio::main]
@@ -141,7 +146,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_default();
     tracing::info!("loaded {} persisted subscription(s)", subs.len());
 
-    let index = std::path::Path::new(&pwa_dir).join("index.html");
+    let (build_id, index_html) = pwa_build(&pwa_dir)?;
+    tracing::info!("serving PWA build {build_id} from {pwa_dir}");
     let state = Arc::new(AppState {
         vapid,
         subs: Mutex::new(subs),
@@ -151,9 +157,12 @@ async fn main() -> anyhow::Result<()> {
         pair_ttl,
         max_blob: 16 * 1024,
         subs_file,
+        build: build_id.clone(),
     });
 
     let app = Router::new()
+        .route("/", get(move || async move { Html(index_html) }))
+        .route("/index.html", get(move || async move { Html(index_html) }))
         .route("/api/config", get(config))
         .route("/api/pair/:token", post(pair_upload).get(pair_fetch))
         .route("/api/subscribe", post(subscribe))
@@ -163,7 +172,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/device/:id", delete(device_delete))
         .with_state(state)
         // Unknown paths fall back to the PWA shell so SPA routes like /pair work.
-        .fallback_service(ServeDir::new(&pwa_dir).fallback(tower_http::services::ServeFile::new(index)))
+        .fallback_service(
+            ServeDir::new(&pwa_dir)
+                .append_index_html_on_directories(false)
+                .fallback(get(move || async move { Html(index_html) })),
+        )
+        // The PWA ships unhashed filenames, so without this a browser is free to
+        // keep serving an old app.js from its heuristic cache indefinitely — which
+        // is exactly how a phone kept enrolling with pre-ack code after a deploy.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ))
         .layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -235,11 +255,34 @@ fn check_auth(
         .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))
 }
 
+/// Hash the PWA bundle and stamp the result into the shell's `app.js` URL.
+///
+/// The bundle ships unhashed filenames, so a browser holding an old `app.js`
+/// has no reason to ask for a new one. Versioning the URL forces the miss, and
+/// the same id is served from `/api/config` so the page can tell whether the
+/// code it is running is the code the relay has.
+fn pwa_build(dir: &str) -> anyhow::Result<(String, &'static str)> {
+    let root = std::path::Path::new(dir);
+    let mut hasher = Sha256::new();
+    for name in ["index.html", "app.js", "sw.js", "wasm/pager_wasm.js"] {
+        hasher.update(std::fs::read(root.join(name)).unwrap_or_default());
+    }
+    let build = hex::encode(&hasher.finalize()[..6]);
+
+    let index = std::fs::read_to_string(root.join("index.html"))?;
+    let stamped = index.replace("/app.js\"", &format!("/app.js?v={build}\""));
+    if stamped == index {
+        tracing::warn!("index.html has no /app.js reference to version — clients may cache it");
+    }
+    Ok((build, Box::leak(stamped.into_boxed_str())))
+}
+
 async fn config(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "vapidPublicKey": s.vapid.public_key,
         "subject": s.vapid.subject,
         "contractVersion": pager_proto::PAGER_CONTRACT_VERSION,
+        "build": s.build.clone(),
     }))
 }
 
