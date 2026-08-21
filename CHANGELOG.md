@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/cosmicspork/pager/compare/v0.5.0...v0.5.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **bridge:** reload the device list when pairing changes it ([8cc9517](https://github.com/cosmicspork/pager/commit/8cc9517e8617d8d8c6845ac6793e1c50f8af2a1d))
+
 ## [0.5.0](https://github.com/cosmicspork/pager/compare/v0.4.0...v0.5.0) (2026-08-21)
 
 
