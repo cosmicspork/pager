@@ -1,8 +1,15 @@
 // Pager service worker. On each push it decrypts the sealed payload with the
 // device identity (re-derived from the mnemonic in IndexedDB) and shows the
 // notification. iOS revokes the subscription if a push shows nothing, so EVERY
-// path ends in showNotification — including a generic fallback when decryption
+// path calls showNotification — including a generic fallback when decryption
 // fails or the device isn't paired yet.
+//
+// Every push also stamps health markers in IndexedDB (`last_push_at`,
+// `last_push_shown`) and appends to the log, both independently of whether the
+// banner actually rendered. showNotification() rejects when notification
+// permission is not "granted", and when that rejection was allowed to escape it
+// took the log write with it — leaving a device that silently stopped alerting
+// and stopped recording that anything had arrived at all.
 
 importScripts("/wasm/pager_wasm.js");
 
@@ -41,13 +48,41 @@ async function idbGet(k) {
   });
 }
 
-// Append a decrypted notif to the local log, then prune to the newest LOG_MAX.
+async function idbSet(k, v) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const t = db.transaction("kv", "readwrite").objectStore("kv").put(v, k);
+    t.onsuccess = () => res();
+    t.onerror = () => rej(t.error);
+  });
+}
+
+// Health markers are best-effort: a storage failure must never be the reason a
+// notification doesn't get shown.
+async function mark(k, v) {
+  try {
+    await idbSet(k, v);
+  } catch (e) {
+    // Nothing to do — the app degrades to "unknown" for this field.
+  }
+}
+
+// Append an arrived push to the local log, then prune to the newest LOG_MAX.
+// `shown` and `fault` record what happened to it, so a log that keeps growing
+// while nothing appears on screen is itself the diagnosis.
 async function logNotif(n) {
   const db = await idbOpen();
   await new Promise((res, rej) => {
     const tx = db.transaction("log", "readwrite");
     const store = tx.objectStore("log");
-    store.add({ title: n.title || "", body: n.body || "", source: n.source || "", ts: n.ts || 0 });
+    store.add({
+      title: n.title || "",
+      body: n.body || "",
+      source: n.source || "",
+      ts: n.ts || 0,
+      shown: n.shown !== false,
+      fault: n.fault || "",
+    });
     const keys = store.getAllKeys();
     keys.onsuccess = () => {
       const extra = keys.result.length - LOG_MAX; // ids ascend, so the first keys are oldest
@@ -64,14 +99,26 @@ async function notifyClients() {
   for (const c of cs) c.postMessage({ type: "notif" });
 }
 
+const errText = (e) => (e && e.message ? e.message : String(e));
+
 async function handlePush(event) {
+  const at = Date.now();
+  // Stamped before anything that can fail, so "a push arrived" is recorded even
+  // if every step after this one goes wrong.
+  await mark("last_push_at", at);
+
   let title = "Pager";
   let opts = { body: "New notification" };
   let notif = null;
+  let fault = "";
   try {
     const raw = event.data ? event.data.text() : "";
     const mnemonic = await idbGet("device_mnemonic");
-    if (raw && mnemonic) {
+    if (!raw) {
+      fault = "push carried no payload";
+    } else if (!mnemonic) {
+      fault = "device identity missing — re-register";
+    } else {
       await ensureWasm();
       const dev = wasm_bindgen.DeviceIdentity.from_mnemonic(mnemonic);
       const plain = dev.open(raw, AAD); // Uint8Array of the notif JSON
@@ -81,18 +128,30 @@ async function handlePush(event) {
       notif = n;
     }
   } catch (e) {
-    // Swallow: still show a generic notification so iOS keeps the subscription.
+    fault = "could not open page: " + errText(e);
   }
-  // showNotification first and unconditionally — iOS revokes the subscription if a
-  // push shows nothing, so persistence must never be able to preempt it.
-  await self.registration.showNotification(title, opts);
-  if (notif) {
-    try {
-      await logNotif(notif);
-      await notifyClients();
-    } catch (e) {
-      // A logging failure is non-fatal; the banner already showed.
-    }
+
+  // Still unconditional — iOS revokes the subscription if a push shows nothing.
+  // But the rejection is caught: when notification permission has been revoked
+  // this throws, and everything below it is the only remaining evidence of that.
+  let shown = true;
+  try {
+    await self.registration.showNotification(title, opts);
+  } catch (e) {
+    shown = false;
+    fault = fault || "alerts are off on this device: " + errText(e);
+  }
+  await mark("last_push_shown", shown);
+
+  try {
+    await logNotif(
+      notif
+        ? { ...notif, shown, fault }
+        : { title, body: opts.body, source: "fault", ts: at, shown, fault }
+    );
+    await notifyClients();
+  } catch (e) {
+    // A logging failure is non-fatal; the markers above already recorded arrival.
   }
 }
 
