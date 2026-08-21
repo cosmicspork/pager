@@ -293,7 +293,22 @@ async fn cmd_unpair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, devi
     store::save_devices(dir, &d)?;
     client::delete_device(http, id, &cfg.relay, device_id).await.ok();
     println!("removed {} device(s)", before - d.devices.len());
+    signal_reload(http, &cfg.capture_addr).await;
     Ok(())
+}
+
+/// Nudge a running capture server to re-read `devices.json`. A refused
+/// connection means no bridge is running, which needs no nudge — it will read
+/// the file when it starts. Anything else is reported, because the alternative
+/// is pushes that the relay accepts and no device can open.
+async fn signal_reload(http: &Client, capture_addr: &str) {
+    let url = format!("http://{capture_addr}/reload");
+    match http.post(&url).timeout(Duration::from_secs(2)).send().await {
+        Ok(r) if r.status().is_success() => println!("✓ running bridge picked up the change"),
+        Ok(r) => println!("! running bridge refused the reload ({}) — restart it", r.status()),
+        Err(e) if e.is_connect() => {}
+        Err(e) => println!("! could not reach the running bridge ({e}) — restart it"),
+    }
 }
 
 async fn cmd_pair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, label: &str) -> Result<()> {
@@ -350,6 +365,7 @@ async fn cmd_pair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, label:
             });
             store::save_devices(dir, &devices)?;
             println!("\n✓ paired device {} ({} total)", &enr.device_x25519[..16], devices.devices.len());
+            signal_reload(http, &cfg.capture_addr).await;
             return Ok(());
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -421,13 +437,29 @@ async fn cmd_run(http: Client, id: Arc<Identity>, cfg: Config, dir: PathBuf) -> 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/capture", post(capture))
+        .route("/reload", post(reload_devices))
         .with_state(ctx);
 
     let addr: SocketAddr = cfg.capture_addr.parse().context("PAGER_CAPTURE_ADDR")?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("capture server on http://{addr} (POST /capture)");
+    tracing::info!("capture server on http://{addr} (POST /capture, POST /reload)");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Re-read `devices.json` into the in-memory list. `pair` and `unpair` write
+/// the file, but a running capture server would otherwise keep sealing to the
+/// list it loaded at startup — silently, since the relay still accepts pushes
+/// for a device that was unpaired locally.
+async fn reload_devices(State(ctx): State<Arc<Ctx>>) -> Result<Json<Value>, StatusCode> {
+    let devices = store::load_devices(&ctx.dir).map_err(|e| {
+        tracing::error!("reload failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let n = devices.devices.len();
+    *ctx.devices.write() = devices;
+    tracing::info!("reloaded devices from disk: {n} paired");
+    Ok(Json(serde_json::json!({ "devices": n })))
 }
 
 async fn capture(State(ctx): State<Arc<Ctx>>, Json(ev): Json<Value>) -> StatusCode {
