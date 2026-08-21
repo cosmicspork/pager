@@ -116,7 +116,7 @@ const openFunc = () => device().classList.add("func-open");
 const closeFunc = () => device().classList.remove("func-open");
 
 // ---- stored-pages rendering ----
-const SOURCE_LABEL = { teams: "Teams", outlook: "Outlook", msg: "Message", test: "Test" };
+const SOURCE_LABEL = { teams: "Teams", outlook: "Outlook", msg: "Message", test: "Test", fault: "Undelivered" };
 
 function fmtTime(ts) {
   if (!ts) return "";
@@ -137,7 +137,8 @@ async function renderLog() {
   list.replaceChildren();
   items.forEach((it, i) => {
     const li = document.createElement("li");
-    li.className = i === 0 ? "page fresh" : "page";
+    const faulted = it.shown === false || !!it.fault;
+    li.className = (i === 0 ? "page fresh" : "page") + (faulted ? " faulted" : "");
     const head = document.createElement("div");
     head.className = "phead";
     const src = document.createElement("span");
@@ -157,11 +158,106 @@ async function renderLog() {
       body.textContent = it.body;
       li.append(body);
     }
+    if (it.fault) {
+      const f = document.createElement("div");
+      f.className = "pfault";
+      f.textContent = "⚠ " + it.fault;
+      li.append(f);
+    }
     list.append(li);
   });
   // Only flip between the two paired screens; never override register/qr/boot.
   const s = device().dataset.state;
   if (s === "service" || s === "empty") applyState(items.length ? "service" : "empty");
+}
+
+// Pages and delivery health always move together — a push that arrived but
+// didn't display changes both.
+function refresh() {
+  renderLog()
+    .then(() => renderHealth())
+    .catch(() => {});
+}
+
+// ---- delivery health ----
+//
+// A push can be accepted by Apple, decrypted by the worker, and still never
+// reach the screen — that is exactly how this app went quiet for three days
+// with the relay reporting success the whole time. These are the three facts
+// that distinguish the failure modes, and they are read on every foregrounding.
+
+// serviceWorker.ready never settles when no worker is registered; don't let the
+// panel hang on it.
+function readyOrNull(ms = 3000) {
+  return Promise.race([
+    navigator.serviceWorker.ready.catch(() => null),
+    new Promise((res) => setTimeout(() => res(null), ms)),
+  ]);
+}
+
+async function health() {
+  const perm = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+  let subscribed = null; // null = couldn't determine
+  const reg = await readyOrNull();
+  if (reg) {
+    try { subscribed = !!(await reg.pushManager.getSubscription()); } catch { subscribed = null; }
+  }
+  return {
+    perm,
+    subscribed,
+    at: await idbGet("last_push_at").catch(() => undefined),
+    shown: await idbGet("last_push_shown").catch(() => undefined),
+  };
+}
+
+const PERM_TEXT = { granted: "On", denied: "Blocked", default: "Not enabled", unsupported: "Unsupported" };
+
+// Returns the one fault worth shouting about, most actionable first, or null.
+function faultOf(h) {
+  if (h.perm === "denied")
+    return { title: "Alerts blocked", hint: "Turn notifications back on for Pager in Settings, then reopen this app." };
+  if (h.perm === "unsupported")
+    return { title: "No alerts here", hint: "This browser can't show notifications. Use the installed app." };
+  if (h.perm === "default")
+    return { title: "Alerts off", hint: "Pages arrive but nothing will show on screen.", action: "enable" };
+  if (h.subscribed === false)
+    return { title: "Push lost", hint: "This device is no longer subscribed to the relay. Re-register to restore paging.", action: "repair" };
+  if (h.shown === false)
+    return { title: "Alerts not showing", hint: "The last page arrived but the device refused to display it." };
+  return null;
+}
+
+async function renderHealth() {
+  const h = await health();
+  $("#permState").textContent = PERM_TEXT[h.perm] || h.perm;
+  $("#subState").textContent = h.subscribed === null ? "unknown" : h.subscribed ? "Subscribed" : "Not subscribed";
+  const ago = h.at ? fmtTime(h.at) : "";
+  $("#lastPush").textContent = !h.at
+    ? "never"
+    : (ago === "now" ? ago : ago + " ago") + (h.shown === false ? " · not shown" : "");
+
+  const fault = faultOf(h);
+  const strip = $("#alert");
+  const btn = $("#alertBtn");
+  const paired = ["service", "empty"].includes(device().dataset.state);
+  // Only meaningful once paired — the register screen already explains itself.
+  strip.dataset.shown = paired && fault ? "1" : "0";
+  if (paired) $("#svcTxt").textContent = fault ? "OUT OF SERVICE" : "IN SERVICE";
+  if (!paired || !fault) { btn.hidden = true; return; }
+
+  $("#alertTitle").textContent = fault.title;
+  $("#alertHint").textContent = fault.hint;
+  btn.hidden = !fault.action;
+  if (fault.action === "enable") {
+    btn.textContent = "Enable";
+    btn.onclick = async () => {
+      try { await Notification.requestPermission(); } catch { /* denied stays denied */ }
+      await renderHealth();
+    };
+  } else if (fault.action === "repair") {
+    btn.textContent = "Re-register";
+    btn.onclick = () => { applyState("register"); status(""); renderHealth().catch(() => {}); };
+  }
 }
 
 async function main() {
@@ -188,12 +284,13 @@ async function main() {
   await navigator.serviceWorker.register("/sw.js");
   // The service worker pings us after it logs a freshly arrived push.
   navigator.serviceWorker.addEventListener("message", (e) => {
-    if (e.data && e.data.type === "notif") renderLog().catch(() => {});
+    if (e.data && e.data.type === "notif") refresh();
   });
   // Returning to the foreground may have missed live pings — refresh then.
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) renderLog().catch(() => {});
+    if (!document.hidden) refresh();
   });
+  await renderHealth().catch(() => {});
 }
 
 // Safari, opened from the QR: let the user copy the code into the installed app.
@@ -280,6 +377,7 @@ async function pair(code) {
     status("Paired ✓");
     applyState("service");
     await renderLog();
+    await renderHealth();
   } catch (e) {
     status("Pairing failed: " + e.message);
   } finally {

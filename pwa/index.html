@@ -108,6 +108,20 @@
               text-shadow: var(--glow-soft); white-space: pre-wrap; word-break: break-word; }
     .page.fresh .from::before { color: var(--amber); }
     .page.fresh .ptitle { color: #d9ffe6; }
+    .page.faulted .from, .page.faulted .from::before { color: var(--amber); }
+    .page.faulted .ptitle { color: var(--amber); }
+    .pfault { font-size: 17px; margin-top: 3px; color: var(--amber); opacity: .85;
+              text-shadow: 0 0 5px rgba(255,194,75,.3); word-break: break-word; }
+
+    /* Caution strip: the one place a delivery fault is allowed to shout. */
+    .alert { flex: 0 0 auto; display: none; gap: 10px; align-items: center; justify-content: space-between;
+             margin: 0 0 6px; padding: 7px 9px; border: 1px solid var(--amber); border-radius: 3px;
+             background: rgba(255,194,75,.08); color: var(--amber); text-shadow: 0 0 5px rgba(255,194,75,.35); }
+    .alert[data-shown="1"] { display: flex; }
+    .alert .atxt { font-size: 18px; line-height: 1.1; }
+    .alert .atitle { display: block; letter-spacing: 1px; text-transform: uppercase; }
+    .alert .ahint { display: block; font-size: 16px; opacity: .8; }
+    .alert .btn { flex: 0 0 auto; border-color: var(--amber); color: var(--amber); padding: 4px 9px; font-size: 17px; }
 
     .empty { display: none; flex-direction: column; align-items: center; justify-content: center;
              height: 100%; text-align: center; gap: 8px; color: var(--phos-dim); }
@@ -205,6 +219,10 @@
 
     <!-- service / empty: stored pages -->
     <div class="listwrap">
+      <div class="alert" id="alert">
+        <span class="atxt"><b class="atitle" id="alertTitle"></b><span class="ahint" id="alertHint"></span></span>
+        <button id="alertBtn" class="btn" hidden></button>
+      </div>
       <div class="listlabel">Stored pages</div>
       <ul id="logList" class="list"></ul>
       <div class="empty">
@@ -255,6 +273,9 @@
       <dl class="kv">
         <dt>Cap code</dt><dd id="capFull"></dd>
         <dt>Relay</dt><dd id="relayHost">—</dd>
+        <dt>Alerts</dt><dd id="permState">—</dd>
+        <dt>Push</dt><dd id="subState">—</dd>
+        <dt>Last push</dt><dd id="lastPush">—</dd>
       </dl>
       <div class="sheet-actions">
         <button id="clearLogBtn" class="btn block">Delete all pages</button>
