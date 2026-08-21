@@ -39,9 +39,11 @@ relay never holds a key that can read a message or forge an enrollment.
 
 ## Endpoints (relay)
 
-All mutating endpoints are authenticated as the one configured bridge (Ed25519
-over `svastha-core`'s canonical request bytes). The only public write is the
-pairing-blob upload, which is size-capped and TTL-bounded.
+Mutating endpoints are authenticated as the one configured bridge (Ed25519 over
+`svastha-core`'s canonical request bytes). Two exceptions: the pairing-blob
+upload is a genuinely public write, size-capped and TTL-bounded; and a device's
+delivery acknowledgement is signed by that *device's* key, verified against the
+one it registered at enrollment.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -50,6 +52,8 @@ pairing-blob upload, which is size-capped and TTL-bounded.
 | GET | `/api/pair/:token` | bridge | fetch-and-delete that blob |
 | POST | `/api/subscribe` | bridge | register a device id → push subscription |
 | POST | `/api/notify` | bridge | fan out sealed payloads |
+| POST | `/api/ack/:id` | device | device reports a push reached its worker |
+| GET | `/api/devices` | bridge | per-device delivery state |
 | DELETE | `/api/device/:id` | bridge | drop a device subscription |
 
 ## Deployment
@@ -125,6 +129,54 @@ pager-bridge test --message "hello from the bridge"
 A notification should appear on the phone. After that, real Teams/Outlook events
 captured by the extension flow through automatically. (Teams suppresses
 notifications for your *own* messages — test with a message from someone else.)
+
+## Delivery health
+
+When the phone is quiet, start here:
+
+```bash
+pager-bridge doctor          # walk the whole chain; --test also sends a push
+```
+
+It checks each link in order — capture server, relay reachability, contract
+version, bridge authentication, quiet hours, paired devices, and each device's
+delivery state — and prints a verdict per line, exiting non-zero if anything is
+outright broken. The first ✗ or ⚠ is the answer.
+
+```
+✓ capture server            listening on 127.0.0.1:4500
+✓ relay reachable           https://pager.0x69.xyz
+✓ relay trusts this bridge  ed25519 f3797abfe2eefceb
+✓ quiet hours               not configured
+✓ devices                   1 paired
+✗ device                    iPhone (d50779de)  Pages are arriving but alerts are switched off on the device.
+```
+
+`sent=1 failed=0` means the *push service* accepted the message. It says nothing
+about whether a human saw it: between the relay and a banner sit the device's
+service worker and the OS notification permission, either of which can fail
+silently for days while every push still reports success.
+
+So devices acknowledge each push they handle, signed with their own key, and the
+ack says whether the alert actually reached the screen. `pager-bridge devices`
+reads that back:
+
+```
+d50779de81ec7430  iPhone  paired 2026-06-24
+  push 3m ago · ack 3m ago · shown 3m ago
+```
+
+Two failures are then distinguishable, and the bridge warns about both in its log
+and as a desktop notification, at most twice a day per device:
+
+- **pushes land, no acks** — the worker isn't running. The app was deleted, its
+  storage was evicted, or the subscription is a zombie the push service hasn't
+  retired yet. Re-pair.
+- **acks arrive, nothing shown** — notification permission is off on the device.
+
+Devices paired before acknowledgements existed report `n/a` and are never
+faulted; re-pair one to start tracking it. The PWA shows the same state on the
+device itself, in the Function sheet and as a caution strip.
 
 ## Local development
 

@@ -60,6 +60,22 @@ impl DeviceIdentity {
         hex::encode(self.identity.x25519_public().as_bytes())
     }
 
+    /// The device's Ed25519 public key (hex). Registered with the relay at
+    /// enrollment so it can verify this device's delivery acknowledgements.
+    #[wasm_bindgen(getter)]
+    pub fn ed25519_hex(&self) -> String {
+        hex::encode(self.identity.verifying_key().to_bytes())
+    }
+
+    /// Sign a relay request the way the bridge does — over the canonical
+    /// method/path/body/timestamp bytes — returning the three header values as
+    /// JSON. The service worker uses this to authenticate its acks; the device's
+    /// secret never leaves wasm memory.
+    pub fn sign_headers(&self, method: &str, path: &str, body: &[u8], now_secs: u64) -> Result<String, JsError> {
+        let h = pager_proto::auth::sign(&self.identity, method, path, body, now_secs);
+        serde_json::to_string(&h).map_err(to_js)
+    }
+
     /// Open a notification `SealedBlob` (JSON) addressed to this device, returning
     /// the plaintext bytes. `aad` must match what the bridge sealed with.
     pub fn open(&self, blob_json: &str, aad: &[u8]) -> Result<Vec<u8>, JsError> {

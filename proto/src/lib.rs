@@ -31,6 +31,6 @@ pub const NOTIFY_AAD: &[u8] = b"pager/v0/notify";
 
 pub use seal::{open_blob, seal_to, SealError};
 pub use wire::{
-    Delivery, Enrollment, Notif, NotifyReq, NotifyResp, PairPayload, SealedBlob, SubscribeReq,
-    Subscription, SubscriptionKeys,
+    AckReq, Delivery, DeviceStatus, Enrollment, Notif, NotifyReq, NotifyResp, PairPayload,
+    SealedBlob, SubscribeReq, Subscription, SubscriptionKeys,
 };

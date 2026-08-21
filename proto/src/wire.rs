@@ -38,6 +38,11 @@ pub struct Enrollment {
     /// The device's X25519 public key (hex) — the address the bridge wraps
     /// notification data keys to. Doubles as the device id.
     pub device_x25519: String,
+    /// The device's Ed25519 public key (hex), registered with the relay so it can
+    /// verify that device's delivery acknowledgements. Empty for devices paired
+    /// before acknowledgements existed; those simply cannot ack.
+    #[serde(default)]
+    pub device_ed25519: String,
     /// Human label for the bridge's device list (e.g. "iPhone").
     pub label: String,
     /// The device's Web Push subscription, handed to the relay by the bridge.
@@ -62,6 +67,10 @@ pub struct SubscribeReq {
     /// Device id = its X25519 public key, hex.
     pub id: String,
     pub subscription: Subscription,
+    /// The device's Ed25519 public key (hex) for verifying its acks. Absent for
+    /// devices enrolled by a bridge that predates acknowledgements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ed25519: Option<String>,
 }
 
 /// One sealed push addressed to one device.
@@ -80,12 +89,43 @@ pub struct NotifyReq {
 }
 
 /// `/api/notify` result. `gone` lists device ids whose push subscription the push
-/// service rejected (404/410) so the bridge can drop them.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// service rejected (404/410) so the bridge can drop them; `delivered` lists the
+/// ids the push service accepted, so an aggregate count never has to be guessed
+/// back into per-device outcomes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NotifyResp {
     pub sent: u32,
     pub failed: u32,
     pub gone: Vec<String>,
+    /// Empty when the relay predates per-device outcomes.
+    #[serde(default)]
+    pub delivered: Vec<String>,
+}
+
+/// `POST /api/ack/:id` (device-authenticated): the device reports that a push
+/// reached its service worker. Signed with the device's Ed25519 key over the
+/// same canonical bytes the bridge uses, and verified against the key registered
+/// at enrollment — the relay learns liveness, never content.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AckReq {
+    /// Whether the notification actually reached the screen. False means the
+    /// worker ran but the device refused to display it (alerts switched off).
+    pub shown: bool,
+}
+
+/// One row of `GET /api/devices` (bridge-authenticated): what the relay knows
+/// about a device's delivery state. All timestamps are unix seconds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeviceStatus {
+    pub id: String,
+    /// Last push the push service accepted for this device.
+    pub last_push: Option<u64>,
+    /// Last acknowledgement from the device's service worker.
+    pub last_ack: Option<u64>,
+    /// Last acknowledgement that also reported the alert was displayed.
+    pub last_shown: Option<u64>,
+    /// False for devices enrolled before acks; their silence means nothing.
+    pub can_ack: bool,
 }
 
 /// The data a pairing QR/URL carries to a new device. Encoded base64url in the

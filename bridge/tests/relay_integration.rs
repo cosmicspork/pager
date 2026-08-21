@@ -1,7 +1,8 @@
 //! Spawns the real relay binary and drives the full bridge↔relay↔device flow
-//! over HTTP: auth rejection, the pairing crypto handshake, subscribe, and notify
-//! routing. Proves the request-signing path (which the relay verifies byte-for-
-//! byte over method+path+body) actually agrees end to end.
+//! over HTTP: auth rejection, the pairing crypto handshake, subscribe, notify
+//! routing, and the device's own signed delivery acknowledgement. Proves the
+//! request-signing path (which the relay verifies byte-for-byte over
+//! method+path+body) actually agrees end to end, for both signing identities.
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -103,8 +104,10 @@ async fn full_bridge_relay_device_flow() {
     let (_dm, device) = Identity::generate().unwrap();
     let device_id = hex::encode(device.x25519_public().as_bytes());
     let token = "0011223344556677";
+    let device_ed25519 = hex::encode(device.verifying_key().to_bytes());
     let enrollment = Enrollment {
         device_x25519: device_id.clone(),
+        device_ed25519: device_ed25519.clone(),
         label: "iPhone".into(),
         subscription: Subscription {
             endpoint: "https://example.com/push/fake".into(),
@@ -136,7 +139,12 @@ async fn full_bridge_relay_device_flow() {
     assert_eq!(again.status(), reqwest::StatusCode::NOT_FOUND);
 
     // 5) Bridge registers the device subscription (authed).
-    let sub_body = serde_json::to_vec(&serde_json::json!({ "id": device_id, "subscription": opened.subscription })).unwrap();
+    let sub_body = serde_json::to_vec(&serde_json::json!({
+        "id": device_id,
+        "subscription": opened.subscription,
+        "ed25519": opened.device_ed25519,
+    }))
+    .unwrap();
     let sub = signed(&http, &bridge, reqwest::Method::POST, &format!("{base}/api/subscribe"), "/api/subscribe", sub_body)
         .send().await.unwrap();
     assert_eq!(sub.status(), reqwest::StatusCode::CREATED);
@@ -153,4 +161,35 @@ async fn full_bridge_relay_device_flow() {
     let body: pager_proto::NotifyResp = resp.json().await.unwrap();
     assert_eq!(body.sent, 0, "fake endpoint cannot really deliver");
     assert_eq!(body.failed, 1, "but the relay routed to the registered subscription");
+    assert!(body.delivered.is_empty(), "nothing was accepted by the push service");
+
+    // 7) The device acknowledges a delivery, signing with its *own* key.
+    let ack_path = format!("/api/ack/{device_id}");
+    let ack_body = serde_json::to_vec(&pager_proto::AckReq { shown: true }).unwrap();
+    let ack = signed(&http, &device, reqwest::Method::POST, &format!("{base}{ack_path}"), &ack_path, ack_body)
+        .send().await.unwrap();
+    assert_eq!(ack.status(), reqwest::StatusCode::NO_CONTENT);
+
+    // 8) The bridge key cannot ack for a device — acks are verified against the
+    //    key registered at enrollment, not the relay's trusted bridge key.
+    let ack_body = serde_json::to_vec(&pager_proto::AckReq { shown: true }).unwrap();
+    let forged = signed(&http, &bridge, reqwest::Method::POST, &format!("{base}{ack_path}"), &ack_path, ack_body)
+        .send().await.unwrap();
+    assert_eq!(forged.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    // 9) The bridge reads back delivery state, including the ack just recorded.
+    let st = signed(&http, &bridge, reqwest::Method::GET, &format!("{base}/api/devices"), "/api/devices", Vec::new())
+        .send().await.unwrap();
+    assert_eq!(st.status(), reqwest::StatusCode::OK);
+    let statuses: Vec<pager_proto::DeviceStatus> = st.json().await.unwrap();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].id, device_id);
+    assert!(statuses[0].can_ack, "the device registered a signing key at enrollment");
+    assert!(statuses[0].last_ack.is_some(), "the ack was recorded");
+    assert!(statuses[0].last_shown.is_some(), "and it reported the alert displayed");
+    assert!(statuses[0].last_push.is_none(), "the fake endpoint never accepted a push");
+
+    // 10) Delivery state is bridge-only.
+    let unauthed = http.get(format!("{base}/api/devices")).send().await.unwrap();
+    assert_eq!(unauthed.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
