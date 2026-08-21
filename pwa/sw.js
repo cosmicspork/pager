@@ -101,6 +101,29 @@ async function notifyClients() {
 
 const errText = (e) => (e && e.message ? e.message : String(e));
 
+// Tell the relay this push reached the worker. `shown` separates "the app is
+// alive" from "the alert made it to the screen" — without it, a device with
+// notifications switched off is indistinguishable from one that was deleted.
+// Signed with the device's own key over the same canonical bytes the bridge
+// uses, so the relay learns liveness and nothing else.
+async function ack(dev, shown) {
+  const relay = await idbGet("relay");
+  if (!relay || !dev) return;
+  const path = "/api/ack/" + dev.x25519_hex;
+  const body = new TextEncoder().encode(JSON.stringify({ shown }));
+  const h = JSON.parse(dev.sign_headers("POST", path, body, BigInt(Math.floor(Date.now() / 1000))));
+  await fetch(relay + path, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "svastha-pubkey": h.pubkey,
+      "svastha-signature": h.signature,
+      "svastha-timestamp": String(h.timestamp),
+    },
+    body,
+  });
+}
+
 async function handlePush(event) {
   const at = Date.now();
   // Stamped before anything that can fail, so "a push arrived" is recorded even
@@ -110,6 +133,7 @@ async function handlePush(event) {
   let title = "Pager";
   let opts = { body: "New notification" };
   let notif = null;
+  let dev = null;
   let fault = "";
   try {
     const raw = event.data ? event.data.text() : "";
@@ -120,7 +144,7 @@ async function handlePush(event) {
       fault = "device identity missing — re-register";
     } else {
       await ensureWasm();
-      const dev = wasm_bindgen.DeviceIdentity.from_mnemonic(mnemonic);
+      dev = wasm_bindgen.DeviceIdentity.from_mnemonic(mnemonic);
       const plain = dev.open(raw, AAD); // Uint8Array of the notif JSON
       const n = JSON.parse(new TextDecoder().decode(plain));
       title = n.title || "Pager";
@@ -152,6 +176,12 @@ async function handlePush(event) {
     await notifyClients();
   } catch (e) {
     // A logging failure is non-fatal; the markers above already recorded arrival.
+  }
+
+  try {
+    await ack(dev, shown);
+  } catch (e) {
+    // Offline, or a relay too old to accept acks. The local markers stand.
   }
 }
 

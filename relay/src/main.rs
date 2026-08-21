@@ -13,6 +13,8 @@
 //! - `GET  /api/pair/:token`   — bridge: fetch-and-delete that blob.
 //! - `POST /api/subscribe`     — bridge: register a device id → push subscription.
 //! - `POST /api/notify`        — bridge: fan out sealed payloads to devices.
+//! - `POST /api/ack/:id`       — device: report that a push reached its worker.
+//! - `GET  /api/devices`       — bridge: per-device delivery state.
 //! - `DELETE /api/device/:id`  — bridge: drop a device subscription.
 //! - fallback                  — serve the PWA (with index.html for SPA routes).
 
@@ -30,8 +32,8 @@ use axum::{
 };
 use parking_lot::Mutex;
 use pager_proto::auth::{self, DEFAULT_WINDOW_SECS, HEADER_PUBKEY, HEADER_SIGNATURE, HEADER_TIMESTAMP};
-use pager_proto::{Delivery, NotifyReq, NotifyResp, SubscribeReq, Subscription};
-use serde::Deserialize;
+use pager_proto::{AckReq, Delivery, DeviceStatus, NotifyReq, NotifyResp, SubscribeReq, Subscription, SubscriptionKeys};
+use serde::{Deserialize, Serialize};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use web_push::{
     ContentEncoding, IsahcWebPushClient, SubscriptionInfo, VapidSignatureBuilder, WebPushClient,
@@ -55,10 +57,50 @@ struct Pairing {
     expires: Instant,
 }
 
+/// What the relay stores per device. The subscription fields sit at the top
+/// level so a file written before delivery tracking existed — a bare
+/// `{endpoint, keys}` map — still deserializes, with the rest defaulting to
+/// `None`. All timestamps are unix seconds.
+#[derive(Clone, Serialize, Deserialize)]
+struct DeviceRecord {
+    endpoint: String,
+    keys: SubscriptionKeys,
+    /// Device's Ed25519 public key (hex), used to verify its acks. `None` for
+    /// devices enrolled before acks, which therefore can never ack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ed25519: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_push: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_ack: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_shown: Option<u64>,
+}
+
+impl DeviceRecord {
+    fn new(sub: Subscription, ed25519: Option<String>) -> Self {
+        DeviceRecord {
+            endpoint: sub.endpoint,
+            keys: sub.keys,
+            ed25519,
+            last_push: None,
+            last_ack: None,
+            last_shown: None,
+        }
+    }
+
+    fn subscription(&self) -> Subscription {
+        Subscription { endpoint: self.endpoint.clone(), keys: self.keys.clone() }
+    }
+}
+
 struct AppState {
     vapid: Vapid,
-    /// device id (X25519 hex) → push subscription.
-    subs: Mutex<HashMap<String, Subscription>>,
+    /// device id (X25519 hex) → subscription plus delivery state.
+    subs: Mutex<HashMap<String, DeviceRecord>>,
+    /// Last time the subscription map was written, so liveness timestamps don't
+    /// drive a disk write per push.
+    last_persist: Mutex<Instant>,
     /// pairing token → uploaded enrollment blob (opaque, TTL-bounded).
     pairings: Mutex<HashMap<String, Pairing>>,
     /// Authorized bridge Ed25519 public key (hex). `None` disables every
@@ -95,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
     let subs = subs_file
         .as_ref()
         .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice::<HashMap<String, Subscription>>(&b).ok())
+        .and_then(|b| serde_json::from_slice::<HashMap<String, DeviceRecord>>(&b).ok())
         .unwrap_or_default();
     tracing::info!("loaded {} persisted subscription(s)", subs.len());
 
@@ -103,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         vapid,
         subs: Mutex::new(subs),
+        last_persist: Mutex::new(Instant::now()),
         pairings: Mutex::new(HashMap::new()),
         bridge_pubkey,
         pair_ttl,
@@ -115,6 +158,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/pair/:token", post(pair_upload).get(pair_fetch))
         .route("/api/subscribe", post(subscribe))
         .route("/api/notify", post(notify))
+        .route("/api/ack/:id", post(ack))
+        .route("/api/devices", get(devices))
         .route("/api/device/:id", delete(device_delete))
         .with_state(state)
         // Unknown paths fall back to the PWA shell so SPA routes like /pair work.
@@ -143,6 +188,25 @@ fn persist_subs(s: &AppState) {
         }
         Err(e) => tracing::warn!("serializing subscriptions failed: {e}"),
     }
+}
+
+/// Persist at most once per [`PERSIST_EVERY`]. Liveness timestamps update on
+/// every push and every ack; losing the last few seconds of them to a restart
+/// costs nothing, and a disk write per push would not be free.
+const PERSIST_EVERY: Duration = Duration::from_secs(30);
+
+fn persist_subs_throttled(s: &AppState) {
+    if s.subs_file.is_none() {
+        return;
+    }
+    {
+        let mut last = s.last_persist.lock();
+        if last.elapsed() < PERSIST_EVERY {
+            return;
+        }
+        *last = Instant::now();
+    }
+    persist_subs(s);
 }
 
 /// Verify a bridge-authenticated request over its exact body bytes. Returns a
@@ -219,9 +283,10 @@ async fn subscribe(
     check_auth(&s, "POST", &uri, &headers, &body)?;
     let req: SubscribeReq =
         serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    s.subs.lock().insert(req.id.clone(), req.subscription);
+    let can_ack = req.ed25519.is_some();
+    s.subs.lock().insert(req.id.clone(), DeviceRecord::new(req.subscription, req.ed25519));
     persist_subs(&s);
-    tracing::info!("subscription registered for device {}", short(&req.id));
+    tracing::info!("subscription registered for device {} (acks: {can_ack})", short(&req.id));
     Ok(StatusCode::CREATED)
 }
 
@@ -252,10 +317,11 @@ async fn notify(
         serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let client = IsahcWebPushClient::new().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let (mut sent, mut failed, mut gone) = (0u32, 0u32, Vec::new());
+    let (mut failed, mut gone, mut delivered) = (0u32, Vec::new(), Vec::new());
+    let now = now_secs();
 
     for Delivery { id, payload } in &req.deliveries {
-        let Some(sub) = s.subs.lock().get(id).cloned() else {
+        let Some(sub) = s.subs.lock().get(id).map(DeviceRecord::subscription) else {
             failed += 1;
             tracing::warn!("notify: no subscription for device {}", short(id));
             continue;
@@ -268,7 +334,12 @@ async fn notify(
             }
         };
         match send_one(&client, &s.vapid, &sub, &bytes).await {
-            Ok(()) => sent += 1,
+            Ok(()) => {
+                if let Some(rec) = s.subs.lock().get_mut(id) {
+                    rec.last_push = Some(now);
+                }
+                delivered.push(id.clone());
+            }
             Err(e) => {
                 failed += 1;
                 if matches!(e, WebPushError::EndpointNotFound(_) | WebPushError::EndpointNotValid(_)) {
@@ -279,10 +350,77 @@ async fn notify(
             }
         }
     }
-    if !gone.is_empty() {
+    if gone.is_empty() {
+        persist_subs_throttled(&s);
+    } else {
         persist_subs(&s);
     }
-    Ok(Json(NotifyResp { sent, failed, gone }))
+    Ok(Json(NotifyResp { sent: delivered.len() as u32, failed, gone, delivered }))
+}
+
+/// Device: acknowledge that a push reached the service worker. Public route, but
+/// the body and path are signed by the device's own Ed25519 key and verified
+/// against the key registered at enrollment, so only that device can speak for
+/// it. Records liveness only — the relay learns nothing it did not already know.
+async fn ack(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    uri: OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let Some(device_key) = s.subs.lock().get(&id).and_then(|r| r.ed25519.clone()) else {
+        // Unknown device, or one enrolled before acks existed.
+        return Err((StatusCode::NOT_FOUND, "no ack-capable device with that id".into()));
+    };
+    let h = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let (Some(pubkey), Some(sig), Some(ts)) =
+        (h(HEADER_PUBKEY), h(HEADER_SIGNATURE), h(HEADER_TIMESTAMP))
+    else {
+        return Err((StatusCode::UNAUTHORIZED, "missing auth headers".into()));
+    };
+    let Ok(ts) = ts.parse::<u64>() else {
+        return Err((StatusCode::UNAUTHORIZED, "bad timestamp".into()));
+    };
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or_else(|| uri.path());
+    auth::verify(&device_key, "POST", path, &body, pubkey, sig, ts, now_secs(), DEFAULT_WINDOW_SECS)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
+
+    let req: AckReq =
+        serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let now = now_secs();
+    if let Some(rec) = s.subs.lock().get_mut(&id) {
+        rec.last_ack = Some(now);
+        if req.shown {
+            rec.last_shown = Some(now);
+        }
+    }
+    persist_subs_throttled(&s);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Bridge: per-device delivery state, so `pager-bridge devices` can show which
+/// devices are actually still paging and which have gone quiet.
+async fn devices(
+    State(s): State<Arc<AppState>>,
+    uri: OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<Vec<DeviceStatus>>, (StatusCode, String)> {
+    check_auth(&s, "GET", &uri, &headers, &[])?;
+    let mut out: Vec<DeviceStatus> = s
+        .subs
+        .lock()
+        .iter()
+        .map(|(id, r)| DeviceStatus {
+            id: id.clone(),
+            last_push: r.last_push,
+            last_ack: r.last_ack,
+            last_shown: r.last_shown,
+            can_ack: r.ed25519.is_some(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(Json(out))
 }
 
 async fn send_one(

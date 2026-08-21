@@ -32,6 +32,7 @@ pub enum AuthError {
 }
 
 /// The three header values a signed request carries.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SignedHeaders {
     pub pubkey: String,
     pub signature: String,

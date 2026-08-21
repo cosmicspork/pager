@@ -9,13 +9,14 @@
 //! Subcommands: `run` (default), `pair`, `test`, `devices`, `unpair`, `id`.
 
 mod client;
+mod health;
 mod store;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use axum::{extract::State, http::StatusCode, routing::{get, post}, Json, Router};
@@ -96,7 +97,7 @@ async fn main() -> Result<()> {
 
     match cli.cmd.unwrap_or(Cmd::Run) {
         Cmd::Id => cmd_id(&identity),
-        Cmd::Devices => cmd_devices(&dir)?,
+        Cmd::Devices => cmd_devices(&http, &identity, &cfg, &dir).await?,
         Cmd::Pair { label } => cmd_pair(&http, &identity, &cfg, &dir, &label).await?,
         Cmd::Test { message } => cmd_test(&http, &identity, &cfg, &dir, &message).await?,
         Cmd::Unpair { id } => cmd_unpair(&http, &identity, &cfg, &dir, &id).await?,
@@ -132,13 +133,63 @@ async fn cmd_ping(http: &Client, id: &Identity, cfg: &Config) -> Result<()> {
     }
 }
 
-fn cmd_devices(dir: &Path) -> Result<()> {
+/// A coarse "how long ago", accurate enough to spot a device that went quiet.
+fn ago(now: u64, t: Option<u64>) -> String {
+    let Some(t) = t else { return "never".into() };
+    let d = now.saturating_sub(t);
+    match d {
+        0..=89 => "just now".into(),
+        90..=3599 => format!("{}m ago", d / 60),
+        3600..=86399 => format!("{}h ago", d / 3600),
+        _ => format!("{}d ago", d / 86400),
+    }
+}
+
+fn date(t: u64) -> String {
+    DateTime::from_timestamp(t as i64, 0)
+        .map(|d| d.with_timezone(&Local).format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| t.to_string())
+}
+
+async fn cmd_devices(http: &Client, id: &Identity, cfg: &Config, dir: &Path) -> Result<()> {
     let d = store::load_devices(dir)?;
     if d.devices.is_empty() {
         println!("no paired devices");
+        return Ok(());
     }
+    // Delivery state lives on the relay; without it fall back to the local view.
+    let status = match client::devices(http, id, &cfg.relay).await {
+        Ok(Some(v)) => Some(v),
+        Ok(None) => {
+            println!("(relay has no /api/devices — upgrade it for delivery state)\n");
+            None
+        }
+        Err(e) => {
+            println!("(relay unreachable: {e})\n");
+            None
+        }
+    };
+    let now = client::now_secs();
     for dev in &d.devices {
-        println!("{}  {}  (paired {})", &dev.id[..dev.id.len().min(16)], dev.label, dev.paired_at);
+        println!("{}  {}  paired {}", &dev.id[..dev.id.len().min(16)], dev.label, date(dev.paired_at));
+        match status.as_ref().and_then(|v| v.iter().find(|s| s.id == dev.id)) {
+            Some(st) => {
+                let fault = health::assess(st, now);
+                println!(
+                    "  push {} · ack {} · shown {}{}",
+                    ago(now, st.last_push),
+                    if st.can_ack { ago(now, st.last_ack) } else { "n/a".into() },
+                    if st.can_ack { ago(now, st.last_shown) } else { "n/a".into() },
+                    match fault {
+                        Some(f) => format!("  ⚠ {}", f.detail()),
+                        None if !st.can_ack => "  (paired before acknowledgements; silence proves nothing)".into(),
+                        None => String::new(),
+                    }
+                );
+            }
+            None if status.is_some() => println!("  ⚠ not subscribed on the relay — re-pair"),
+            None => println!("  push {} (local view)", ago(now, dev.last_delivered)),
+        }
     }
     Ok(())
 }
@@ -215,13 +266,18 @@ async fn cmd_pair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, label:
             let plaintext = pager_proto::open_blob(id, &blob, token.as_bytes()).context("opening enrollment blob")?;
             let enr: Enrollment = serde_json::from_slice(&plaintext).context("enrollment payload")?;
 
-            client::subscribe(http, id, &cfg.relay, &enr.device_x25519, enr.subscription).await?;
+            let device_key = Some(enr.device_ed25519.clone()).filter(|k| !k.is_empty());
+            if device_key.is_none() {
+                println!("note: this device can't acknowledge deliveries — update the PWA to get delivery health");
+            }
+            client::subscribe(http, id, &cfg.relay, &enr.device_x25519, enr.subscription, device_key).await?;
             let mut devices = store::load_devices(dir)?;
             devices.devices.retain(|d| d.id != enr.device_x25519);
             devices.devices.push(Device {
                 id: enr.device_x25519.clone(),
                 label: if enr.label.is_empty() { label.to_string() } else { enr.label },
                 paired_at: now_ms() / 1000,
+                last_delivered: None,
             });
             store::save_devices(dir, &devices)?;
             println!("\n✓ paired device {} ({} total)", &enr.device_x25519[..16], devices.devices.len());
@@ -241,6 +297,10 @@ struct Ctx {
     /// conversationId → newest LastDeliveryTime (epoch secs) seen. In-memory;
     /// resets on restart (the recency guard then prevents backfill spam).
     seen: Mutex<HashMap<String, i64>>,
+    /// When delivery health was last checked against the relay, and when each
+    /// device was last complained about, so neither runs once per push.
+    checked_at: Mutex<Option<Instant>>,
+    warned_at: Mutex<HashMap<String, u64>>,
 }
 
 impl Ctx {
@@ -277,7 +337,17 @@ async fn cmd_run(http: Client, id: Arc<Identity>, cfg: Config, dir: PathBuf) -> 
         devices.read().devices.len(),
         cfg.quiet
     );
-    let ctx = Arc::new(Ctx { id, relay: cfg.relay, devices, dir, http, quiet: cfg.quiet, seen: Mutex::new(HashMap::new()) });
+    let ctx = Arc::new(Ctx {
+        id,
+        relay: cfg.relay,
+        devices,
+        dir,
+        http,
+        quiet: cfg.quiet,
+        seen: Mutex::new(HashMap::new()),
+        checked_at: Mutex::new(None),
+        warned_at: Mutex::new(HashMap::new()),
+    });
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -313,18 +383,68 @@ async fn capture(State(ctx): State<Arc<Ctx>>, Json(ev): Json<Value>) -> StatusCo
     match client::notify(&ctx.http, &ctx.id, &ctx.relay, deliveries).await {
         Ok(resp) => {
             tracing::info!("pushed '{}' sent={} failed={}", notif.title, resp.sent, resp.failed);
-            if !resp.gone.is_empty() {
+            {
                 let mut d = ctx.devices.write();
-                d.devices.retain(|x| !resp.gone.contains(&x.id));
+                let now = client::now_secs();
+                for dev in d.devices.iter_mut().filter(|x| resp.delivered.contains(&x.id)) {
+                    dev.last_delivered = Some(now);
+                }
+                if !resp.gone.is_empty() {
+                    d.devices.retain(|x| !resp.gone.contains(&x.id));
+                    tracing::info!("pruned {} dead device(s)", resp.gone.len());
+                }
                 store::save_devices(&ctx.dir, &d).ok();
-                tracing::info!("pruned {} dead device(s)", resp.gone.len());
             }
+            // Accepted by the push service is not the same as read by a human;
+            // periodically ask the relay whether the devices are still paging.
+            tokio::spawn(check_health(ctx.clone()));
             StatusCode::OK
         }
         Err(e) => {
             tracing::error!("relay notify failed: {e}");
             StatusCode::BAD_GATEWAY
         }
+    }
+}
+
+/// Ask the relay which devices have gone quiet and say so out loud — in the log
+/// and on the desktop. Throttled to [`health::CHECK_EVERY`], and to one warning
+/// per device per [`health::RENOTIFY_SECS`]; silently gives up if the relay is
+/// older than the endpoint or unreachable.
+async fn check_health(ctx: Arc<Ctx>) {
+    {
+        let mut checked = ctx.checked_at.lock();
+        if checked.is_some_and(|t| t.elapsed() < health::CHECK_EVERY) {
+            return;
+        }
+        *checked = Some(Instant::now());
+    }
+    let Ok(Some(status)) = client::devices(&ctx.http, &ctx.id, &ctx.relay).await else {
+        return;
+    };
+    let now = client::now_secs();
+    for st in &status {
+        let Some(fault) = health::assess(st, now) else {
+            ctx.warned_at.lock().remove(&st.id);
+            continue;
+        };
+        {
+            let mut warned = ctx.warned_at.lock();
+            if warned.get(&st.id).is_some_and(|&t| now.saturating_sub(t) < health::RENOTIFY_SECS) {
+                continue;
+            }
+            warned.insert(st.id.clone(), now);
+        }
+        let label = ctx
+            .devices
+            .read()
+            .devices
+            .iter()
+            .find(|d| d.id == st.id)
+            .map_or_else(|| st.id[..st.id.len().min(8)].to_string(), |d| d.label.clone());
+        let headline = fault.headline(&label);
+        tracing::warn!("{headline}: {}", fault.detail());
+        health::notify_locally(&headline, fault.detail());
     }
 }
 

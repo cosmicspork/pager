@@ -360,6 +360,7 @@ async function pair(code) {
 
     const enrollment = {
       device_x25519: dev.x25519_hex,
+      device_ed25519: dev.ed25519_hex, // lets the relay verify this device's acks
       label: deviceLabel(),
       subscription: { endpoint: j.endpoint, keys: { p256dh: j.keys.p256dh, auth: j.keys.auth } },
     };

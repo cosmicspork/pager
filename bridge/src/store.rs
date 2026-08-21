@@ -25,6 +25,11 @@ pub struct Device {
     pub id: String,
     pub label: String,
     pub paired_at: u64,
+    /// Unix seconds of the last push the relay reported as accepted for this
+    /// device. Absent on devices last written by a bridge without per-device
+    /// outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_delivered: Option<u64>,
 }
 
 #[derive(Default, Serialize, Deserialize)]

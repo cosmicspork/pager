@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
 use pager_proto::auth::{self, HEADER_PUBKEY, HEADER_SIGNATURE, HEADER_TIMESTAMP};
-use pager_proto::{Delivery, NotifyReq, NotifyResp, SubscribeReq, Subscription};
+use pager_proto::{Delivery, DeviceStatus, NotifyReq, NotifyResp, SubscribeReq, Subscription};
 use reqwest::{Client, Method, StatusCode};
 use svastha_core::keys::Identity;
 
@@ -36,8 +36,15 @@ async fn signed(
     Ok(resp)
 }
 
-pub async fn subscribe(http: &Client, id: &Identity, relay: &str, device_id: &str, sub: Subscription) -> Result<()> {
-    let body = serde_json::to_vec(&SubscribeReq { id: device_id.to_string(), subscription: sub })?;
+pub async fn subscribe(
+    http: &Client,
+    id: &Identity,
+    relay: &str,
+    device_id: &str,
+    sub: Subscription,
+    ed25519: Option<String>,
+) -> Result<()> {
+    let body = serde_json::to_vec(&SubscribeReq { id: device_id.to_string(), subscription: sub, ed25519 })?;
     let resp = signed(http, id, relay, Method::POST, "/api/subscribe", body).await?;
     if !resp.status().is_success() {
         bail!("subscribe failed: {} {}", resp.status(), resp.text().await.unwrap_or_default());
@@ -52,6 +59,18 @@ pub async fn notify(http: &Client, id: &Identity, relay: &str, deliveries: Vec<D
         bail!("notify failed: {} {}", resp.status(), resp.text().await.unwrap_or_default());
     }
     Ok(resp.json().await?)
+}
+
+/// Per-device delivery state as the relay sees it. `Ok(None)` when the relay
+/// predates the endpoint, so a bridge upgraded ahead of its relay degrades to
+/// the local view instead of erroring.
+pub async fn devices(http: &Client, id: &Identity, relay: &str) -> Result<Option<Vec<DeviceStatus>>> {
+    let resp = signed(http, id, relay, Method::GET, "/api/devices", Vec::new()).await?;
+    match resp.status() {
+        StatusCode::OK => Ok(Some(resp.json().await?)),
+        StatusCode::NOT_FOUND => Ok(None),
+        s => bail!("device status fetch failed: {} {}", s, resp.text().await.unwrap_or_default()),
+    }
 }
 
 /// Fetch-and-delete a pending pairing blob. `Ok(None)` when nothing is waiting.

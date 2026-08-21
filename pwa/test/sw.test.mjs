@@ -48,9 +48,18 @@ function fakeIndexedDB(kv = new Map(), log = []) {
 }
 
 // --- load sw.js into a context we control ----------------------------------
-async function loadWorker({ notif = { title: 'Alice', body: 'hi', source: 'teams', ts: 42 }, mnemonic = 'word '.repeat(24).trim(), showNotification, open } = {}) {
+async function loadWorker({ notif = { title: 'Alice', body: 'hi', source: 'teams', ts: 42 }, mnemonic = 'word '.repeat(24).trim(), showNotification, open, relay, fetchImpl } = {}) {
   const { idb, kv, log } = fakeIndexedDB();
   if (mnemonic) kv.set('device_mnemonic', mnemonic);
+  if (relay) kv.set('relay', relay);
+
+  const acks = [];
+  const fetch =
+    fetchImpl ||
+    ((url, init) => {
+      acks.push({ url, init, body: JSON.parse(new TextDecoder().decode(init.body)) });
+      return Promise.resolve({ ok: true });
+    });
 
   const shown = [];
   const listeners = new Map();
@@ -71,6 +80,9 @@ async function loadWorker({ notif = { title: 'Alice', body: 'hi', source: 'teams
     DeviceIdentity: {
       from_mnemonic: () => ({
         open: open || (() => new TextEncoder().encode(JSON.stringify(notif))),
+        x25519_hex: 'deadbeef',
+        sign_headers: (method, path, body, now) =>
+          JSON.stringify({ pubkey: 'pk', signature: 'sig', timestamp: Number(now), method, path }),
       }),
     },
   });
@@ -80,10 +92,14 @@ async function loadWorker({ notif = { title: 'Alice', body: 'hi', source: 'teams
     indexedDB: idb,
     importScripts: () => {},
     wasm_bindgen,
+    fetch,
     TextEncoder,
     TextDecoder,
     queueMicrotask,
     setTimeout,
+    BigInt,
+    Math,
+    JSON,
     Date,
   });
   const source = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
@@ -95,7 +111,7 @@ async function loadWorker({ notif = { title: 'Alice', body: 'hi', source: 'teams
     listeners.get('push')({ data: { text: () => payload }, waitUntil: (p) => (pending = p) });
     await pending;
   };
-  return { push, kv, log, shown };
+  return { push, kv, log, shown, acks };
 }
 
 test('a delivered page is logged, marked shown, and stamps the health markers', async () => {
@@ -152,4 +168,45 @@ test('an unpaired device records why rather than logging nothing', async () => {
   assert.equal(shown.length, 1);
   assert.equal(log().length, 1);
   assert.match(log()[0].fault, /device identity missing/);
+});
+
+test('a handled push is acknowledged to the relay, signed by the device', async () => {
+  const { push, acks } = await loadWorker({ relay: 'https://relay.example' });
+  await push();
+
+  assert.equal(acks.length, 1);
+  assert.equal(acks[0].url, 'https://relay.example/api/ack/deadbeef');
+  assert.equal(acks[0].body.shown, true);
+  assert.equal(acks[0].init.headers['svastha-pubkey'], 'pk');
+  assert.equal(acks[0].init.headers['svastha-signature'], 'sig');
+  assert.ok(acks[0].init.headers['svastha-timestamp']);
+});
+
+test('the ack reports shown:false when the alert was refused', async () => {
+  // This is the distinction the bridge needs: the worker is alive, the device
+  // just will not display anything. Silence alone cannot tell the two apart.
+  const { push, acks } = await loadWorker({
+    relay: 'https://relay.example',
+    showNotification: () => Promise.reject(new TypeError('permission not granted')),
+  });
+  await push();
+
+  assert.equal(acks.length, 1);
+  assert.equal(acks[0].body.shown, false);
+});
+
+test('an unpaired device has nothing to sign with and acks nothing', async () => {
+  const { push, acks } = await loadWorker({ relay: 'https://relay.example', mnemonic: null });
+  await push();
+  assert.equal(acks.length, 0);
+});
+
+test('a failed ack does not cost the page its log entry', async () => {
+  const { push, log } = await loadWorker({
+    relay: 'https://relay.example',
+    fetchImpl: () => Promise.reject(new Error('offline')),
+  });
+  await push();
+  assert.equal(log().length, 1);
+  assert.equal(log()[0].title, 'Alice');
 });
