@@ -67,7 +67,10 @@ one it registered at enrollment.
   devices registered.
 - **Bridge** runs on your machine as a `systemd --user` service
   (`contrib/pager-bridge.service`), listening on `127.0.0.1:4500` for the
-  extension and forwarding to `PAGER_RELAY_URL`.
+  extension and forwarding to `PAGER_RELAY_URL`. It holds the paired-device
+  list in memory, so `pair` and `unpair` post to its loopback `/reload` to keep
+  it in step; if that post can't be delivered they say so, and restarting the
+  service has the same effect.
 
 ### Releases & deploys
 
