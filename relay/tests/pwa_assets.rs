@@ -11,7 +11,11 @@ use std::time::Duration;
 use reqwest::Client;
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 struct Relay(Child);
@@ -28,7 +32,10 @@ async fn boot() -> (Relay, Client, String) {
     let port = free_port();
     let vapid = std::env::temp_dir().join(format!("pager-pwa-test-vapid-{port}.json"));
     std::fs::write(&vapid, VAPID).unwrap();
-    let pwa = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("pwa");
+    let pwa = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("pwa");
 
     let relay = Relay(
         Command::new(env!("CARGO_BIN_EXE_pager-relay"))
@@ -41,7 +48,13 @@ async fn boot() -> (Relay, Client, String) {
     let http = Client::new();
     let base = format!("http://127.0.0.1:{port}");
     for _ in 0..50 {
-        if http.get(format!("{base}/api/config")).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+        if http
+            .get(format!("{base}/api/config"))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
             return (relay, http, base);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -70,9 +83,16 @@ async fn shell_points_at_a_versioned_app_js_matching_the_reported_build() {
     assert!(
         shell.contains(&format!("/app.js?v={build}")),
         "shell must request the build the relay is serving, got:\n{}",
-        shell.lines().filter(|l| l.contains("app.js")).collect::<Vec<_>>().join("\n")
+        shell
+            .lines()
+            .filter(|l| l.contains("app.js"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
-    assert!(!shell.contains("\"/app.js\""), "unversioned app.js must not survive");
+    assert!(
+        !shell.contains("\"/app.js\""),
+        "unversioned app.js must not survive"
+    );
 }
 
 #[tokio::test]
@@ -81,8 +101,18 @@ async fn spa_routes_and_index_serve_the_same_stamped_shell() {
 
     let root = http.get(&base).send().await.unwrap().text().await.unwrap();
     for path in ["/index.html", "/pair"] {
-        let body = http.get(format!("{base}{path}")).send().await.unwrap().text().await.unwrap();
-        assert_eq!(body, root, "{path} must serve the stamped shell, not the file on disk");
+        let body = http
+            .get(format!("{base}{path}"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(
+            body, root,
+            "{path} must serve the stamped shell, not the file on disk"
+        );
     }
 }
 
@@ -94,7 +124,9 @@ async fn every_pwa_response_asks_the_browser_to_revalidate() {
         let r = http.get(format!("{base}{path}")).send().await.unwrap();
         assert!(r.status().is_success(), "{path} → {}", r.status());
         assert_eq!(
-            r.headers().get("cache-control").and_then(|v| v.to_str().ok()),
+            r.headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
             Some("no-cache"),
             "{path} must not be cacheable without revalidation"
         );

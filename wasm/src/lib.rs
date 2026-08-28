@@ -39,13 +39,19 @@ impl DeviceIdentity {
     /// Generate a fresh 24-word device identity.
     pub fn generate() -> Result<DeviceIdentity, JsError> {
         let (mnemonic, identity) = Identity::generate().map_err(to_js)?;
-        Ok(DeviceIdentity { identity, mnemonic: Some(mnemonic.to_string()) })
+        Ok(DeviceIdentity {
+            identity,
+            mnemonic: Some(mnemonic.to_string()),
+        })
     }
 
     /// Re-derive a device identity from its persisted mnemonic.
     pub fn from_mnemonic(phrase: &str) -> Result<DeviceIdentity, JsError> {
         let identity = Identity::from_mnemonic(phrase, "").map_err(to_js)?;
-        Ok(DeviceIdentity { identity, mnemonic: Some(phrase.to_string()) })
+        Ok(DeviceIdentity {
+            identity,
+            mnemonic: Some(phrase.to_string()),
+        })
     }
 
     /// The backup mnemonic to persist (only present right after `generate`).
@@ -71,7 +77,13 @@ impl DeviceIdentity {
     /// method/path/body/timestamp bytes — returning the three header values as
     /// JSON. The service worker uses this to authenticate its acks; the device's
     /// secret never leaves wasm memory.
-    pub fn sign_headers(&self, method: &str, path: &str, body: &[u8], now_secs: u64) -> Result<String, JsError> {
+    pub fn sign_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        now_secs: u64,
+    ) -> Result<String, JsError> {
         let h = pager_proto::auth::sign(&self.identity, method, path, body, now_secs);
         serde_json::to_string(&h).map_err(to_js)
     }
@@ -87,7 +99,11 @@ impl DeviceIdentity {
 /// Seal `plaintext` to a recipient's X25519 public key (hex), returning a
 /// `SealedBlob` as JSON. The PWA uses this to seal its enrollment to the bridge.
 #[wasm_bindgen]
-pub fn seal_to(recipient_x25519_hex: &str, plaintext: &[u8], aad: &[u8]) -> Result<String, JsError> {
+pub fn seal_to(
+    recipient_x25519_hex: &str,
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<String, JsError> {
     let blob = pager_proto::seal_to(recipient_x25519_hex, plaintext, aad).map_err(to_js)?;
     serde_json::to_string(&blob).map_err(to_js)
 }

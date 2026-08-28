@@ -53,3 +53,15 @@ jobs:
             ghcr.io/cosmicspork/pager:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # The bridge, for running one in the cluster as well as on a laptop.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: bridge
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/cosmicspork/pager-bridge:${{ needs.release-please.outputs.version }}
+            ghcr.io/cosmicspork/pager-bridge:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

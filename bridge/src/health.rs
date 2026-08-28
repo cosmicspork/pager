@@ -102,32 +102,56 @@ mod tests {
     const NOW: u64 = 1_000_000;
 
     fn st(last_push: Option<u64>, last_ack: Option<u64>, last_shown: Option<u64>) -> DeviceStatus {
-        DeviceStatus { id: "abc".into(), last_push, last_ack, last_shown, can_ack: true }
+        DeviceStatus {
+            id: "abc".into(),
+            last_push,
+            last_ack,
+            last_shown,
+            can_ack: true,
+        }
     }
 
     #[test]
     fn healthy_device_is_not_faulted() {
-        assert_eq!(assess(&st(Some(NOW - 60), Some(NOW - 60), Some(NOW - 60)), NOW), None);
+        assert_eq!(
+            assess(&st(Some(NOW - 60), Some(NOW - 60), Some(NOW - 60)), NOW),
+            None
+        );
     }
 
     #[test]
     fn pushes_landing_with_no_acks_is_silent() {
-        assert_eq!(assess(&st(Some(NOW - 60), None, None), NOW), Some(Fault::Silent));
+        assert_eq!(
+            assess(&st(Some(NOW - 60), None, None), NOW),
+            Some(Fault::Silent)
+        );
         let long_ago = NOW - STALE_SECS - 1;
-        assert_eq!(assess(&st(Some(NOW - 60), Some(long_ago), Some(long_ago)), NOW), Some(Fault::Silent));
+        assert_eq!(
+            assess(&st(Some(NOW - 60), Some(long_ago), Some(long_ago)), NOW),
+            Some(Fault::Silent)
+        );
     }
 
     #[test]
     fn acking_without_displaying_is_the_alerts_off_case() {
         let long_ago = NOW - STALE_SECS - 1;
-        assert_eq!(assess(&st(Some(NOW - 60), Some(NOW - 60), Some(long_ago)), NOW), Some(Fault::NotShowing));
-        assert_eq!(assess(&st(Some(NOW - 60), Some(NOW - 60), None), NOW), Some(Fault::NotShowing));
+        assert_eq!(
+            assess(&st(Some(NOW - 60), Some(NOW - 60), Some(long_ago)), NOW),
+            Some(Fault::NotShowing)
+        );
+        assert_eq!(
+            assess(&st(Some(NOW - 60), Some(NOW - 60), None), NOW),
+            Some(Fault::NotShowing)
+        );
     }
 
     #[test]
     fn silence_alone_proves_nothing() {
         // Nothing pushed recently: the device has had no chance to ack.
-        assert_eq!(assess(&st(Some(NOW - RECENT_PUSH_SECS - 1), None, None), NOW), None);
+        assert_eq!(
+            assess(&st(Some(NOW - RECENT_PUSH_SECS - 1), None, None), NOW),
+            None
+        );
         assert_eq!(assess(&st(None, None, None), NOW), None);
         // Devices paired before acks existed can never ack; never fault them.
         let mut legacy = st(Some(NOW - 60), None, None);

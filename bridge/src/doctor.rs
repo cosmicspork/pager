@@ -39,7 +39,11 @@ pub struct Check {
 
 impl Check {
     pub fn new(name: &'static str, level: Level, detail: impl Into<String>) -> Self {
-        Check { name, level, detail: detail.into() }
+        Check {
+            name,
+            level,
+            detail: detail.into(),
+        }
     }
     pub fn ok(name: &'static str, detail: impl Into<String>) -> Self {
         Check::new(name, Level::Ok, detail)
@@ -75,7 +79,9 @@ pub fn report(checks: &[Check]) -> bool {
 /// it is the check that catches a bridge that isn't running at all.
 pub async fn check_capture(http: &Client, addr: &str) -> Check {
     match http.get(format!("http://{addr}/health")).send().await {
-        Ok(r) if r.status().is_success() => Check::ok("capture server", format!("listening on {addr}")),
+        Ok(r) if r.status().is_success() => {
+            Check::ok("capture server", format!("listening on {addr}"))
+        }
         Ok(r) => Check::warn("capture server", format!("{addr} answered {}", r.status())),
         Err(_) => Check::fail(
             "capture server",
@@ -89,7 +95,10 @@ pub fn check_contract(theirs: Option<u64>) -> Check {
     let ours = pager_proto::PAGER_CONTRACT_VERSION as u64;
     match theirs {
         Some(v) if v == ours => Check::ok("relay contract", format!("v{v}")),
-        Some(v) => Check::fail("relay contract", format!("relay speaks v{v}, this bridge speaks v{ours}")),
+        Some(v) => Check::fail(
+            "relay contract",
+            format!("relay speaks v{v}, this bridge speaks v{ours}"),
+        ),
         None => Check::warn("relay contract", "relay did not report a contract version"),
     }
 }
@@ -110,26 +119,46 @@ pub fn check_quiet(quiet: Option<(u32, u32)>, hour: u32) -> Check {
 /// Paired devices, and what the relay knows about each one's deliveries.
 pub fn check_devices(devices: &Devices, status: Option<&[DeviceStatus]>, now: u64) -> Vec<Check> {
     if devices.devices.is_empty() {
-        return vec![Check::fail("devices", "none paired — run `pager-bridge pair`")];
+        return vec![Check::fail(
+            "devices",
+            "none paired — run `pager-bridge pair`",
+        )];
     }
-    let mut out = vec![Check::ok("devices", format!("{} paired", devices.devices.len()))];
+    let mut out = vec![Check::ok(
+        "devices",
+        format!("{} paired", devices.devices.len()),
+    )];
     let Some(status) = status else {
-        out.push(Check::warn("delivery state", "relay did not report it; cannot tell if devices are still paging"));
+        out.push(Check::warn(
+            "delivery state",
+            "relay did not report it; cannot tell if devices are still paging",
+        ));
         return out;
     };
     for dev in &devices.devices {
         let short = &dev.id[..dev.id.len().min(8)];
         let detail = |d: String| format!("{} ({short})  {d}", dev.label);
         match status.iter().find(|s| s.id == dev.id) {
-            None => out.push(Check::new("device", Level::Fail, detail("not subscribed on the relay — re-pair".into()))),
+            None => out.push(Check::new(
+                "device",
+                Level::Fail,
+                detail("not subscribed on the relay — re-pair".into()),
+            )),
             Some(st) if !st.can_ack => out.push(Check::new(
                 "device",
                 Level::Warn,
-                detail("paired before acknowledgements — re-pair to see whether it is still paging".into()),
+                detail(
+                    "paired before acknowledgements — re-pair to see whether it is still paging"
+                        .into(),
+                ),
             )),
             Some(st) => match health::assess(st, now) {
                 Some(f) => out.push(Check::new("device", Level::Fail, detail(f.detail().into()))),
-                None => out.push(Check::new("device", Level::Ok, detail("acknowledging deliveries".into()))),
+                None => out.push(Check::new(
+                    "device",
+                    Level::Ok,
+                    detail("acknowledging deliveries".into()),
+                )),
             },
         }
     }
@@ -142,11 +171,22 @@ mod tests {
     use crate::store::Device;
 
     fn dev(id: &str) -> Device {
-        Device { id: id.into(), label: "iPhone".into(), paired_at: 0, last_delivered: None }
+        Device {
+            id: id.into(),
+            label: "iPhone".into(),
+            paired_at: 0,
+            last_delivered: None,
+        }
     }
 
     fn status(id: &str, can_ack: bool, last_ack: Option<u64>) -> DeviceStatus {
-        DeviceStatus { id: id.into(), last_push: Some(1000), last_ack, last_shown: last_ack, can_ack }
+        DeviceStatus {
+            id: id.into(),
+            last_push: Some(1000),
+            last_ack,
+            last_shown: last_ack,
+            can_ack,
+        }
     }
 
     #[test]
@@ -172,7 +212,9 @@ mod tests {
 
     #[test]
     fn a_device_the_relay_has_never_heard_of_fails() {
-        let devices = Devices { devices: vec![dev("aaaa1111")] };
+        let devices = Devices {
+            devices: vec![dev("aaaa1111")],
+        };
         let checks = check_devices(&devices, Some(&[]), 1000);
         assert_eq!(checks[1].level, Level::Fail);
         assert!(checks[1].detail.contains("re-pair"));
@@ -180,7 +222,9 @@ mod tests {
 
     #[test]
     fn a_silent_ack_capable_device_fails_and_a_legacy_one_only_warns() {
-        let devices = Devices { devices: vec![dev("aaaa1111")] };
+        let devices = Devices {
+            devices: vec![dev("aaaa1111")],
+        };
         // Pushed a minute ago and never acknowledged: recent enough to judge.
         let now = 1060;
 
@@ -193,8 +237,14 @@ mod tests {
 
     #[test]
     fn healthy_devices_report_clean() {
-        let devices = Devices { devices: vec![dev("aaaa1111")] };
-        let checks = check_devices(&devices, Some(&[status("aaaa1111", true, Some(1000))]), 1000);
+        let devices = Devices {
+            devices: vec![dev("aaaa1111")],
+        };
+        let checks = check_devices(
+            &devices,
+            Some(&[status("aaaa1111", true, Some(1000))]),
+            1000,
+        );
         assert!(checks.iter().all(|c| c.level == Level::Ok));
         assert!(report(&checks));
     }

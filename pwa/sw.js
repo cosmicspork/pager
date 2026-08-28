@@ -148,7 +148,9 @@ async function handlePush(event) {
       const plain = dev.open(raw, AAD); // Uint8Array of the notif JSON
       const n = JSON.parse(new TextDecoder().decode(plain));
       title = n.title || "Pager";
-      opts = { body: n.body || "", tag: n.source || undefined, data: n };
+      // The tag is the replacement key: mail collapses under its source, but
+      // a sender that wants each item to stand alone sends its own.
+      opts = { body: n.body || "", tag: n.tag || n.source || undefined, data: n };
       notif = n;
     }
   } catch (e) {
@@ -189,8 +191,27 @@ self.addEventListener("push", (event) => event.waitUntil(handlePush(event)));
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  // A notification may name where it came from. Same-origin windows are
+  // focused and navigated; anywhere else opens a new one.
+  const url = event.notification.data && event.notification.data.url;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+      if (url) {
+        let target;
+        try {
+          target = new URL(url, self.location.origin);
+        } catch (e) {
+          target = null;
+        }
+        if (target) {
+          for (const c of cs) {
+            if (c.url && new URL(c.url).origin === target.origin && "focus" in c) {
+              return "navigate" in c ? c.navigate(target.href).then((w) => w && w.focus()) : c.focus();
+            }
+          }
+          if (self.clients.openWindow) return self.clients.openWindow(target.href);
+        }
+      }
       for (const c of cs) if ("focus" in c) return c.focus();
       if (self.clients.openWindow) return self.clients.openWindow("/");
     })
