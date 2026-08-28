@@ -20,6 +20,8 @@ fn full_notify_path() {
         body: "ping while you were afk".into(),
         source: "teams".into(),
         ts: 1_700_000_000_000,
+        url: None,
+        tag: None,
     };
     let plaintext = serde_json::to_vec(&notif).unwrap();
     let blob = seal_to(&device_id, &plaintext, NOTIFY_AAD).unwrap();
@@ -53,7 +55,12 @@ fn pairing_enrollment_path() {
         "label": "iPhone",
         "subscription": { "endpoint": "https://push/x", "keys": { "p256dh": "p", "auth": "a" } }
     });
-    let blob = seal_to(&bridge_x, &serde_json::to_vec(&enrollment).unwrap(), token.as_bytes()).unwrap();
+    let blob = seal_to(
+        &bridge_x,
+        &serde_json::to_vec(&enrollment).unwrap(),
+        token.as_bytes(),
+    )
+    .unwrap();
 
     // Relay stores the SealedBlob JSON opaquely; bridge fetches and opens it.
     let stored = serde_json::to_vec(&blob).unwrap();

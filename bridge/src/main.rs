@@ -21,13 +21,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use axum::{extract::State, http::StatusCode, routing::{get, post}, Json, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD as B64URL};
 use base64::Engine;
 use chrono::{DateTime, Local, Timelike};
 use clap::{Parser, Subcommand};
-use parking_lot::{Mutex, RwLock};
 use pager_proto::{Delivery, Enrollment, Notif, PairPayload, SealedBlob};
+use parking_lot::{Mutex, RwLock};
 use reqwest::Client;
 use serde_json::Value;
 use svastha_core::keys::Identity;
@@ -35,7 +40,10 @@ use svastha_core::keys::Identity;
 use store::{Device, Devices};
 
 #[derive(Parser)]
-#[command(name = "pager-bridge", about = "Pager local bridge: capture → seal → relay")]
+#[command(
+    name = "pager-bridge",
+    about = "Pager local bridge: capture → seal → relay"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -81,10 +89,14 @@ struct Config {
 
 impl Config {
     fn from_env() -> Self {
-        let quiet = std::env::var("PAGER_QUIET").ok().and_then(|s| parse_quiet(&s));
+        let quiet = std::env::var("PAGER_QUIET")
+            .ok()
+            .and_then(|s| parse_quiet(&s));
         Config {
-            relay: std::env::var("PAGER_RELAY_URL").unwrap_or_else(|_| "https://pager.0x69.xyz".into()),
-            capture_addr: std::env::var("PAGER_CAPTURE_ADDR").unwrap_or_else(|_| "127.0.0.1:4500".into()),
+            relay: std::env::var("PAGER_RELAY_URL")
+                .unwrap_or_else(|_| "https://pager.0x69.xyz".into()),
+            capture_addr: std::env::var("PAGER_CAPTURE_ADDR")
+                .unwrap_or_else(|_| "127.0.0.1:4500".into()),
             quiet,
         }
     }
@@ -101,7 +113,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = Config::from_env();
     let dir = store::config_dir();
-    let identity = Arc::new(store::load_or_create_identity(&dir).context("loading bridge identity")?);
+    let identity =
+        Arc::new(store::load_or_create_identity(&dir).context("loading bridge identity")?);
     let http = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
     match cli.cmd.unwrap_or(Cmd::Run) {
@@ -124,18 +137,29 @@ async fn main() -> Result<()> {
 fn cmd_id(id: &Identity) {
     let ed = hex::encode(id.verifying_key().to_bytes());
     println!("bridge ed25519 (relay-auth id): {ed}");
-    println!("bridge x25519  (pairing addr):  {}", hex::encode(id.x25519_public().as_bytes()));
+    println!(
+        "bridge x25519  (pairing addr):  {}",
+        hex::encode(id.x25519_public().as_bytes())
+    );
     println!("\nConfigure the relay with:\n  PAGER_BRIDGE_PUBKEY={ed}");
 }
 
 /// Confirm the relay is reachable and accepts this bridge's signed requests.
 async fn cmd_ping(http: &Client, id: &Identity, cfg: &Config) -> Result<()> {
     let cfg_url = format!("{}/api/config", cfg.relay.trim_end_matches('/'));
-    let v: serde_json::Value = http.get(&cfg_url).send().await.context("relay unreachable")?.json().await?;
+    let v: serde_json::Value = http
+        .get(&cfg_url)
+        .send()
+        .await
+        .context("relay unreachable")?
+        .json()
+        .await?;
     println!(
         "relay {} reachable (contract v{})",
         cfg.relay,
-        v.get("contractVersion").and_then(|x| x.as_u64()).unwrap_or(0)
+        v.get("contractVersion")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0)
     );
     // A signed GET that 404s (no such pairing) proves auth passed; 401/503 means it did not.
     match client::fetch_pairing(http, id, &cfg.relay, &random_token()).await {
@@ -168,7 +192,13 @@ fn date(t: u64) -> String {
 /// Walk the chain in order and print a verdict per link. Each step is
 /// independent: a dead relay still reports on the capture server and the local
 /// device list, because knowing which links are fine is half the diagnosis.
-async fn cmd_doctor(http: &Client, id: &Identity, cfg: &Config, dir: &Path, send_test: bool) -> Result<bool> {
+async fn cmd_doctor(
+    http: &Client,
+    id: &Identity,
+    cfg: &Config,
+    dir: &Path,
+    send_test: bool,
+) -> Result<bool> {
     use doctor::{Check, Level};
 
     println!("relay {}\n", cfg.relay);
@@ -180,25 +210,52 @@ async fn cmd_doctor(http: &Client, id: &Identity, cfg: &Config, dir: &Path, send
         Some(r) if r.status().is_success() => {
             let v: Value = r.json().await.unwrap_or(Value::Null);
             checks.push(Check::ok("relay reachable", cfg.relay.clone()));
-            checks.push(doctor::check_contract(v.get("contractVersion").and_then(|x| x.as_u64())));
+            checks.push(doctor::check_contract(
+                v.get("contractVersion").and_then(|x| x.as_u64()),
+            ));
         }
-        Some(r) => checks.push(Check::fail("relay reachable", format!("{} answered {}", cfg.relay, r.status()))),
-        None => checks.push(Check::fail("relay reachable", format!("{} is unreachable", cfg.relay))),
+        Some(r) => checks.push(Check::fail(
+            "relay reachable",
+            format!("{} answered {}", cfg.relay, r.status()),
+        )),
+        None => checks.push(Check::fail(
+            "relay reachable",
+            format!("{} is unreachable", cfg.relay),
+        )),
     }
 
     // A signed GET that 404s proves auth passed; 401/503 means it did not.
-    let authed = client::fetch_pairing(http, id, &cfg.relay, &random_token()).await.is_ok();
+    let authed = client::fetch_pairing(http, id, &cfg.relay, &random_token())
+        .await
+        .is_ok();
     checks.push(if authed {
-        Check::ok("relay trusts this bridge", format!("ed25519 {}", &hex::encode(id.verifying_key().to_bytes())[..16]))
+        Check::ok(
+            "relay trusts this bridge",
+            format!(
+                "ed25519 {}",
+                &hex::encode(id.verifying_key().to_bytes())[..16]
+            ),
+        )
     } else {
-        Check::fail("relay trusts this bridge", "authentication rejected — check PAGER_BRIDGE_PUBKEY on the relay")
+        Check::fail(
+            "relay trusts this bridge",
+            "authentication rejected — check PAGER_BRIDGE_PUBKEY on the relay",
+        )
     });
 
     checks.push(doctor::check_quiet(cfg.quiet, Local::now().hour()));
 
     let devices = store::load_devices(dir)?;
-    let status = if authed { client::devices(http, id, &cfg.relay).await.ok().flatten() } else { None };
-    checks.extend(doctor::check_devices(&devices, status.as_deref(), client::now_secs()));
+    let status = if authed {
+        client::devices(http, id, &cfg.relay).await.ok().flatten()
+    } else {
+        None
+    };
+    checks.extend(doctor::check_devices(
+        &devices,
+        status.as_deref(),
+        client::now_secs(),
+    ));
 
     if send_test && !devices.devices.is_empty() {
         let notif = Notif {
@@ -206,13 +263,25 @@ async fn cmd_doctor(http: &Client, id: &Identity, cfg: &Config, dir: &Path, send
             body: "doctor".into(),
             source: "test".into(),
             ts: now_ms(),
+            url: None,
+            tag: None,
         };
         checks.push(match build_deliveries(&devices.devices, &notif) {
             Err(e) => Check::fail("test push", e.to_string()),
             Ok(d) => match client::notify(http, id, &cfg.relay, d).await {
                 Err(e) => Check::fail("test push", e.to_string()),
-                Ok(r) if r.failed > 0 => Check::new("test push", Level::Warn, format!("sent={} failed={}", r.sent, r.failed)),
-                Ok(r) => Check::ok("test push", format!("accepted for {} device(s) — watch for it on the phone", r.sent)),
+                Ok(r) if r.failed > 0 => Check::new(
+                    "test push",
+                    Level::Warn,
+                    format!("sent={} failed={}", r.sent, r.failed),
+                ),
+                Ok(r) => Check::ok(
+                    "test push",
+                    format!(
+                        "accepted for {} device(s) — watch for it on the phone",
+                        r.sent
+                    ),
+                ),
             },
         });
     }
@@ -240,18 +309,35 @@ async fn cmd_devices(http: &Client, id: &Identity, cfg: &Config, dir: &Path) -> 
     };
     let now = client::now_secs();
     for dev in &d.devices {
-        println!("{}  {}  paired {}", &dev.id[..dev.id.len().min(16)], dev.label, date(dev.paired_at));
-        match status.as_ref().and_then(|v| v.iter().find(|s| s.id == dev.id)) {
+        println!(
+            "{}  {}  paired {}",
+            &dev.id[..dev.id.len().min(16)],
+            dev.label,
+            date(dev.paired_at)
+        );
+        match status
+            .as_ref()
+            .and_then(|v| v.iter().find(|s| s.id == dev.id))
+        {
             Some(st) => {
                 let fault = health::assess(st, now);
                 println!(
                     "  push {} · ack {} · shown {}{}",
                     ago(now, st.last_push),
-                    if st.can_ack { ago(now, st.last_ack) } else { "n/a".into() },
-                    if st.can_ack { ago(now, st.last_shown) } else { "n/a".into() },
+                    if st.can_ack {
+                        ago(now, st.last_ack)
+                    } else {
+                        "n/a".into()
+                    },
+                    if st.can_ack {
+                        ago(now, st.last_shown)
+                    } else {
+                        "n/a".into()
+                    },
                     match fault {
                         Some(f) => format!("  ⚠ {}", f.detail()),
-                        None if !st.can_ack => "  (paired before acknowledgements; silence proves nothing)".into(),
+                        None if !st.can_ack =>
+                            "  (paired before acknowledgements; silence proves nothing)".into(),
                         None => String::new(),
                     }
                 );
@@ -269,29 +355,57 @@ fn build_deliveries(devices: &[Device], notif: &Notif) -> Result<Vec<Delivery>> 
     let mut out = Vec::with_capacity(devices.len());
     for d in devices {
         let blob = pager_proto::seal_to(&d.id, &plaintext, pager_proto::NOTIFY_AAD)?;
-        out.push(Delivery { id: d.id.clone(), payload: B64.encode(serde_json::to_vec(&blob)?) });
+        out.push(Delivery {
+            id: d.id.clone(),
+            payload: B64.encode(serde_json::to_vec(&blob)?),
+        });
     }
     Ok(out)
 }
 
-async fn cmd_test(http: &Client, id: &Identity, cfg: &Config, dir: &Path, message: &str) -> Result<()> {
+async fn cmd_test(
+    http: &Client,
+    id: &Identity,
+    cfg: &Config,
+    dir: &Path,
+    message: &str,
+) -> Result<()> {
     let devices = store::load_devices(dir)?.devices;
     if devices.is_empty() {
         anyhow::bail!("no paired devices — run `pager-bridge pair` first");
     }
-    let notif = Notif { title: "Pager test".into(), body: message.into(), source: "test".into(), ts: now_ms() };
+    let notif = Notif {
+        title: "Pager test".into(),
+        body: message.into(),
+        source: "test".into(),
+        ts: now_ms(),
+        url: None,
+        tag: None,
+    };
     let deliveries = build_deliveries(&devices, &notif)?;
     let resp = client::notify(http, id, &cfg.relay, deliveries).await?;
-    println!("sent={} failed={} gone={:?}", resp.sent, resp.failed, resp.gone);
+    println!(
+        "sent={} failed={} gone={:?}",
+        resp.sent, resp.failed, resp.gone
+    );
     Ok(())
 }
 
-async fn cmd_unpair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, device_id: &str) -> Result<()> {
+async fn cmd_unpair(
+    http: &Client,
+    id: &Identity,
+    cfg: &Config,
+    dir: &Path,
+    device_id: &str,
+) -> Result<()> {
     let mut d = store::load_devices(dir)?;
     let before = d.devices.len();
-    d.devices.retain(|x| x.id != device_id && !x.id.starts_with(device_id));
+    d.devices
+        .retain(|x| x.id != device_id && !x.id.starts_with(device_id));
     store::save_devices(dir, &d)?;
-    client::delete_device(http, id, &cfg.relay, device_id).await.ok();
+    client::delete_device(http, id, &cfg.relay, device_id)
+        .await
+        .ok();
     println!("removed {} device(s)", before - d.devices.len());
     signal_reload(http, &cfg.capture_addr).await;
     Ok(())
@@ -305,13 +419,22 @@ async fn signal_reload(http: &Client, capture_addr: &str) {
     let url = format!("http://{capture_addr}/reload");
     match http.post(&url).timeout(Duration::from_secs(2)).send().await {
         Ok(r) if r.status().is_success() => println!("✓ running bridge picked up the change"),
-        Ok(r) => println!("! running bridge refused the reload ({}) — restart it", r.status()),
+        Ok(r) => println!(
+            "! running bridge refused the reload ({}) — restart it",
+            r.status()
+        ),
         Err(e) if e.is_connect() => {}
         Err(e) => println!("! could not reach the running bridge ({e}) — restart it"),
     }
 }
 
-async fn cmd_pair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, label: &str) -> Result<()> {
+async fn cmd_pair(
+    http: &Client,
+    id: &Identity,
+    cfg: &Config,
+    dir: &Path,
+    label: &str,
+) -> Result<()> {
     // The device needs the VAPID public key to subscribe; the relay serves it.
     let vapid_public_key = http
         .get(format!("{}/api/config", cfg.relay.trim_end_matches('/')))
@@ -333,7 +456,11 @@ async fn cmd_pair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, label:
         token: token.clone(),
         contract_version: pager_proto::PAGER_CONTRACT_VERSION,
     };
-    let url = format!("{}/pair#{}", payload.relay, B64URL.encode(serde_json::to_vec(&payload)?));
+    let url = format!(
+        "{}/pair#{}",
+        payload.relay,
+        B64URL.encode(serde_json::to_vec(&payload)?)
+    );
 
     println!("\nScan with your phone's camera (or open the URL on the device):\n");
     print_qr(&url);
@@ -346,25 +473,44 @@ async fn cmd_pair(http: &Client, id: &Identity, cfg: &Config, dir: &Path, label:
             anyhow::bail!("pairing timed out — re-run `pager-bridge pair`");
         }
         if let Some(blob_bytes) = client::fetch_pairing(http, id, &cfg.relay, &token).await? {
-            let blob: SealedBlob = serde_json::from_slice(&blob_bytes).context("enrollment blob is not a SealedBlob")?;
-            let plaintext = pager_proto::open_blob(id, &blob, token.as_bytes()).context("opening enrollment blob")?;
-            let enr: Enrollment = serde_json::from_slice(&plaintext).context("enrollment payload")?;
+            let blob: SealedBlob = serde_json::from_slice(&blob_bytes)
+                .context("enrollment blob is not a SealedBlob")?;
+            let plaintext = pager_proto::open_blob(id, &blob, token.as_bytes())
+                .context("opening enrollment blob")?;
+            let enr: Enrollment =
+                serde_json::from_slice(&plaintext).context("enrollment payload")?;
 
             let device_key = Some(enr.device_ed25519.clone()).filter(|k| !k.is_empty());
             if device_key.is_none() {
                 println!("note: this device can't acknowledge deliveries — update the PWA to get delivery health");
             }
-            client::subscribe(http, id, &cfg.relay, &enr.device_x25519, enr.subscription, device_key).await?;
+            client::subscribe(
+                http,
+                id,
+                &cfg.relay,
+                &enr.device_x25519,
+                enr.subscription,
+                device_key,
+            )
+            .await?;
             let mut devices = store::load_devices(dir)?;
             devices.devices.retain(|d| d.id != enr.device_x25519);
             devices.devices.push(Device {
                 id: enr.device_x25519.clone(),
-                label: if enr.label.is_empty() { label.to_string() } else { enr.label },
+                label: if enr.label.is_empty() {
+                    label.to_string()
+                } else {
+                    enr.label
+                },
                 paired_at: now_ms() / 1000,
                 last_delivered: None,
             });
             store::save_devices(dir, &devices)?;
-            println!("\n✓ paired device {} ({} total)", &enr.device_x25519[..16], devices.devices.len());
+            println!(
+                "\n✓ paired device {} ({} total)",
+                &enr.device_x25519[..16],
+                devices.devices.len()
+            );
             signal_reload(http, &cfg.capture_addr).await;
             return Ok(());
         }
@@ -483,11 +629,20 @@ async fn capture(State(ctx): State<Arc<Ctx>>, Json(ev): Json<Value>) -> StatusCo
     };
     match client::notify(&ctx.http, &ctx.id, &ctx.relay, deliveries).await {
         Ok(resp) => {
-            tracing::info!("pushed '{}' sent={} failed={}", notif.title, resp.sent, resp.failed);
+            tracing::info!(
+                "pushed '{}' sent={} failed={}",
+                notif.title,
+                resp.sent,
+                resp.failed
+            );
             {
                 let mut d = ctx.devices.write();
                 let now = client::now_secs();
-                for dev in d.devices.iter_mut().filter(|x| resp.delivered.contains(&x.id)) {
+                for dev in d
+                    .devices
+                    .iter_mut()
+                    .filter(|x| resp.delivered.contains(&x.id))
+                {
                     dev.last_delivered = Some(now);
                 }
                 if !resp.gone.is_empty() {
@@ -531,7 +686,10 @@ async fn check_health(ctx: Arc<Ctx>) {
         };
         {
             let mut warned = ctx.warned_at.lock();
-            if warned.get(&st.id).is_some_and(|&t| now.saturating_sub(t) < health::RENOTIFY_SECS) {
+            if warned
+                .get(&st.id)
+                .is_some_and(|&t| now.saturating_sub(t) < health::RENOTIFY_SECS)
+            {
                 continue;
             }
             warned.insert(st.id.clone(), now);
@@ -542,7 +700,10 @@ async fn check_health(ctx: Arc<Ctx>) {
             .devices
             .iter()
             .find(|d| d.id == st.id)
-            .map_or_else(|| st.id[..st.id.len().min(8)].to_string(), |d| d.label.clone());
+            .map_or_else(
+                || st.id[..st.id.len().min(8)].to_string(),
+                |d| d.label.clone(),
+            );
         let headline = fault.headline(&label);
         tracing::warn!("{headline}: {}", fault.detail());
         health::notify_locally(&headline, fault.detail());
@@ -552,7 +713,13 @@ async fn check_health(ctx: Arc<Ctx>) {
 /// Apply the (deliberately small) rules engine, turning a raw capture event into
 /// a notification, or `None` to drop it.
 fn event_to_notif(ev: &Value, quiet: Option<(u32, u32)>) -> Option<Notif> {
-    let s = |k: &str| ev.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let s = |k: &str| {
+        ev.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
     let source = s("source");
     if source == "__diag" {
         return None; // extension's "capture installed" heartbeat
@@ -570,20 +737,45 @@ fn event_to_notif(ev: &Value, quiet: Option<(u32, u32)>) -> Option<Notif> {
     }
     let source = if source.is_empty() {
         let host = s("host");
-        if host.contains("teams") { "teams" } else if host.contains("outlook") { "outlook" } else { "msg" }.to_string()
+        if host.contains("teams") {
+            "teams"
+        } else if host.contains("outlook") {
+            "outlook"
+        } else {
+            "msg"
+        }
+        .to_string()
     } else {
         source
     };
     let ts = ev.get("ts").and_then(|v| v.as_u64()).unwrap_or_else(now_ms);
-    Some(Notif { title, body, source, ts })
+    let opt = |k: &str| {
+        let v = s(k);
+        (!v.is_empty()).then_some(v)
+    };
+    Some(Notif {
+        title,
+        body,
+        source,
+        ts,
+        url: opt("url"),
+        tag: opt("tag"),
+    })
 }
 
 pub(crate) fn in_quiet(h: u32, start: u32, end: u32) -> bool {
-    if start <= end { h >= start && h < end } else { h >= start || h < end }
+    if start <= end {
+        h >= start && h < end
+    } else {
+        h >= start || h < end
+    }
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn random_token() -> String {
@@ -595,7 +787,10 @@ fn random_token() -> String {
 fn print_qr(data: &str) {
     match qrcode::QrCode::new(data.as_bytes()) {
         Ok(code) => {
-            let s = code.render::<qrcode::render::unicode::Dense1x2>().quiet_zone(true).build();
+            let s = code
+                .render::<qrcode::render::unicode::Dense1x2>()
+                .quiet_zone(true)
+                .build();
             println!("{s}");
         }
         Err(_) => println!("(QR too large to render; use the URL below)"),
@@ -615,15 +810,57 @@ mod tests {
 
     #[test]
     fn drops_diag_and_empty() {
-        assert!(event_to_notif(&serde_json::json!({"source":"__diag","title":"x"}), None).is_none());
+        assert!(
+            event_to_notif(&serde_json::json!({"source":"__diag","title":"x"}), None).is_none()
+        );
         assert!(event_to_notif(&serde_json::json!({"source":"teams"}), None).is_none());
     }
 
     #[test]
     fn keeps_real_event_and_derives_source() {
-        let n = event_to_notif(&serde_json::json!({"title":"Team — Alice","body":"hi","host":"teams.microsoft.com"}), None).unwrap();
+        let n = event_to_notif(
+            &serde_json::json!({"title":"Team — Alice","body":"hi","host":"teams.microsoft.com"}),
+            None,
+        )
+        .unwrap();
         assert_eq!(n.title, "Team — Alice");
         assert_eq!(n.source, "teams");
+    }
+
+    /// A sender that knows where its notification points says so, and each
+    /// item stands on its own banner rather than replacing the last.
+    #[test]
+    fn carries_a_link_and_a_tag_when_the_sender_gives_them() {
+        let n = event_to_notif(
+            &serde_json::json!({
+                "source": "tracon",
+                "title": "Review — feat: the thing",
+                "body": "+12 −3",
+                "url": "https://tracon.example/reviews/r1",
+                "tag": "tracon-review-r1",
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(n.url.as_deref(), Some("https://tracon.example/reviews/r1"));
+        assert_eq!(n.tag.as_deref(), Some("tracon-review-r1"));
+    }
+
+    /// The extension sends neither, and must keep behaving as it did: the
+    /// banner collapses under its source and tapping opens the app.
+    #[test]
+    fn a_sender_that_gives_neither_is_unchanged() {
+        let n = event_to_notif(
+            &serde_json::json!({"title": "Team — Alice", "body": "hi", "host": "teams.microsoft.com"}),
+            None,
+        )
+        .unwrap();
+        assert!(n.url.is_none());
+        assert!(n.tag.is_none());
+        // Absent fields stay off the wire, so an older device decodes it.
+        let json = serde_json::to_value(&n).unwrap();
+        assert!(json.get("url").is_none(), "{json}");
+        assert!(json.get("tag").is_none(), "{json}");
     }
 
     #[test]

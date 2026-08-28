@@ -31,9 +31,14 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use pager_proto::auth::{
+    self, DEFAULT_WINDOW_SECS, HEADER_PUBKEY, HEADER_SIGNATURE, HEADER_TIMESTAMP,
+};
+use pager_proto::{
+    AckReq, Delivery, DeviceStatus, NotifyReq, NotifyResp, SubscribeReq, Subscription,
+    SubscriptionKeys,
+};
 use parking_lot::Mutex;
-use pager_proto::auth::{self, DEFAULT_WINDOW_SECS, HEADER_PUBKEY, HEADER_SIGNATURE, HEADER_TIMESTAMP};
-use pager_proto::{AckReq, Delivery, DeviceStatus, NotifyReq, NotifyResp, SubscribeReq, Subscription, SubscriptionKeys};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tower_http::{cors::CorsLayer, services::ServeDir, set_header::SetResponseHeaderLayer};
@@ -92,7 +97,10 @@ impl DeviceRecord {
     }
 
     fn subscription(&self) -> Subscription {
-        Subscription { endpoint: self.endpoint.clone(), keys: self.keys.clone() }
+        Subscription {
+            endpoint: self.endpoint.clone(),
+            keys: self.keys.clone(),
+        }
     }
 }
 
@@ -107,7 +115,7 @@ struct AppState {
     pairings: Mutex<HashMap<String, Pairing>>,
     /// Authorized bridge Ed25519 public key (hex). `None` disables every
     /// bridge-authenticated endpoint (relay refuses with 503 until configured).
-    bridge_pubkey: Option<String>,
+    bridge_pubkeys: Vec<String>,
     pair_ttl: Duration,
     max_blob: usize,
     /// Optional JSON file the subscription map is persisted to so a relay restart
@@ -126,7 +134,15 @@ async fn main() -> anyhow::Result<()> {
     let vapid: Vapid = serde_json::from_slice(&std::fs::read(&vapid_path)?)?;
     let pwa_dir = std::env::var("PAGER_PWA_DIR").unwrap_or_else(|_| "pwa".into());
     let addr = std::env::var("PAGER_RELAY_ADDR").unwrap_or_else(|_| "127.0.0.1:4500".into());
-    let bridge_pubkey = std::env::var("PAGER_BRIDGE_PUBKEY").ok().filter(|s| !s.is_empty());
+    // One key or several, comma-separated: each bridge holds its own device
+    // keys and seals its own payloads, so authorizing a second sender does not
+    // widen what any of them can read.
+    let bridge_pubkeys: Vec<String> = std::env::var("PAGER_BRIDGE_PUBKEY")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     let pair_ttl = Duration::from_secs(
         std::env::var("PAGER_PAIR_TTL_SECS")
             .ok()
@@ -134,11 +150,16 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(600),
     );
 
-    if bridge_pubkey.is_none() {
+    if bridge_pubkeys.is_empty() {
         tracing::warn!("PAGER_BRIDGE_PUBKEY unset — bridge endpoints return 503 until configured");
+    } else {
+        tracing::info!("{} authorized bridge key(s)", bridge_pubkeys.len());
     }
 
-    let subs_file = std::env::var("PAGER_SUBS_FILE").ok().filter(|s| !s.is_empty()).map(PathBuf::from);
+    let subs_file = std::env::var("PAGER_SUBS_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
     let subs = subs_file
         .as_ref()
         .and_then(|p| std::fs::read(p).ok())
@@ -153,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
         subs: Mutex::new(subs),
         last_persist: Mutex::new(Instant::now()),
         pairings: Mutex::new(HashMap::new()),
-        bridge_pubkey,
+        bridge_pubkeys,
         pair_ttl,
         max_blob: 16 * 1024,
         subs_file,
@@ -193,12 +214,17 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Persist the subscription map to disk if a file is configured (best-effort).
 fn persist_subs(s: &AppState) {
-    let Some(path) = s.subs_file.as_ref() else { return };
+    let Some(path) = s.subs_file.as_ref() else {
+        return;
+    };
     let snapshot = s.subs.lock().clone();
     match serde_json::to_vec(&snapshot) {
         Ok(bytes) => {
@@ -238,9 +264,12 @@ fn check_auth(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(), (StatusCode, String)> {
-    let Some(authorized) = s.bridge_pubkey.as_deref() else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "relay not configured with a bridge key".into()));
-    };
+    if s.bridge_pubkeys.is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "relay not configured with a bridge key".into(),
+        ));
+    }
     let h = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let (Some(pubkey), Some(sig), Some(ts)) =
         (h(HEADER_PUBKEY), h(HEADER_SIGNATURE), h(HEADER_TIMESTAMP))
@@ -250,9 +279,22 @@ fn check_auth(
     let Ok(ts) = ts.parse::<u64>() else {
         return Err((StatusCode::UNAUTHORIZED, "bad timestamp".into()));
     };
-    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or_else(|| uri.path());
-    auth::verify(authorized, method, path, body, pubkey, sig, ts, now_secs(), DEFAULT_WINDOW_SECS)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))
+    let path = uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or_else(|| uri.path());
+    auth::verify(
+        s.bridge_pubkeys.iter().map(String::as_str),
+        method,
+        path,
+        body,
+        pubkey,
+        sig,
+        ts,
+        now_secs(),
+        DEFAULT_WINDOW_SECS,
+    )
+    .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))
 }
 
 /// Hash the PWA bundle and stamp the result into the shell's `app.js` URL.
@@ -297,7 +339,13 @@ async fn pair_upload(
     }
     let mut p = s.pairings.lock();
     p.retain(|_, v| v.expires > Instant::now());
-    p.insert(token, Pairing { blob: body.to_vec(), expires: Instant::now() + s.pair_ttl });
+    p.insert(
+        token,
+        Pairing {
+            blob: body.to_vec(),
+            expires: Instant::now() + s.pair_ttl,
+        },
+    );
     (StatusCode::CREATED, "stored")
 }
 
@@ -327,9 +375,15 @@ async fn subscribe(
     let req: SubscribeReq =
         serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let can_ack = req.ed25519.is_some();
-    s.subs.lock().insert(req.id.clone(), DeviceRecord::new(req.subscription, req.ed25519));
+    s.subs.lock().insert(
+        req.id.clone(),
+        DeviceRecord::new(req.subscription, req.ed25519),
+    );
     persist_subs(&s);
-    tracing::info!("subscription registered for device {} (acks: {can_ack})", short(&req.id));
+    tracing::info!(
+        "subscription registered for device {} (acks: {can_ack})",
+        short(&req.id)
+    );
     Ok(StatusCode::CREATED)
 }
 
@@ -359,7 +413,8 @@ async fn notify(
     let req: NotifyReq =
         serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    let client = IsahcWebPushClient::new().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client = IsahcWebPushClient::new()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let (mut failed, mut gone, mut delivered) = (0u32, Vec::new(), Vec::new());
     let now = now_secs();
 
@@ -385,7 +440,10 @@ async fn notify(
             }
             Err(e) => {
                 failed += 1;
-                if matches!(e, WebPushError::EndpointNotFound(_) | WebPushError::EndpointNotValid(_)) {
+                if matches!(
+                    e,
+                    WebPushError::EndpointNotFound(_) | WebPushError::EndpointNotValid(_)
+                ) {
                     s.subs.lock().remove(id);
                     gone.push(id.clone());
                 }
@@ -398,7 +456,12 @@ async fn notify(
     } else {
         persist_subs(&s);
     }
-    Ok(Json(NotifyResp { sent: delivered.len() as u32, failed, gone, delivered }))
+    Ok(Json(NotifyResp {
+        sent: delivered.len() as u32,
+        failed,
+        gone,
+        delivered,
+    }))
 }
 
 /// Device: acknowledge that a push reached the service worker. Public route, but
@@ -414,7 +477,10 @@ async fn ack(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let Some(device_key) = s.subs.lock().get(&id).and_then(|r| r.ed25519.clone()) else {
         // Unknown device, or one enrolled before acks existed.
-        return Err((StatusCode::NOT_FOUND, "no ack-capable device with that id".into()));
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no ack-capable device with that id".into(),
+        ));
     };
     let h = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let (Some(pubkey), Some(sig), Some(ts)) =
@@ -425,9 +491,23 @@ async fn ack(
     let Ok(ts) = ts.parse::<u64>() else {
         return Err((StatusCode::UNAUTHORIZED, "bad timestamp".into()));
     };
-    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or_else(|| uri.path());
-    auth::verify(&device_key, "POST", path, &body, pubkey, sig, ts, now_secs(), DEFAULT_WINDOW_SECS)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
+    let path = uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or_else(|| uri.path());
+    // A device ack is authorized by exactly one key: the device's own.
+    auth::verify(
+        [device_key.as_str()],
+        "POST",
+        path,
+        &body,
+        pubkey,
+        sig,
+        ts,
+        now_secs(),
+        DEFAULT_WINDOW_SECS,
+    )
+    .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
 
     let req: AckReq =
         serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -472,7 +552,11 @@ async fn send_one(
     sub: &Subscription,
     payload: &[u8],
 ) -> Result<(), WebPushError> {
-    let info = SubscriptionInfo::new(sub.endpoint.clone(), sub.keys.p256dh.clone(), sub.keys.auth.clone());
+    let info = SubscriptionInfo::new(
+        sub.endpoint.clone(),
+        sub.keys.p256dh.clone(),
+        sub.keys.auth.clone(),
+    );
     let mut sig = VapidSignatureBuilder::from_base64(&vapid.private_key, &info)?;
     sig.add_claim("sub", vapid.subject.as_str());
     let signature = sig.build()?;

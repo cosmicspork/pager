@@ -77,6 +77,19 @@ one it registered at enrollment.
   it in step; if that post can't be delivered they say so, and restarting the
   service has the same effect.
 
+  More than one bridge may be authorized: `PAGER_BRIDGE_PUBKEY` takes a
+  comma-separated list. Each bridge holds its own identity and device pairings
+  and seals its own payloads, so authorizing a second sender widens who may
+  *send* without widening who can read — the relay still sees only ciphertext.
+  That is what lets something always-on (a bridge in the cluster, image
+  `ghcr.io/cosmicspork/pager-bridge`, `PAGER_CONFIG_DIR` on a volume) page the
+  phone while every laptop is asleep. Pair the phone to each bridge you want to
+  hear from; `pager-bridge id` prints the key to add.
+
+  The capture endpoint is unauthenticated by design — it is reached over
+  loopback, or over a pod network with only its intended senders routed to it.
+  Never expose it beyond that.
+
 ### Releases & deploys
 
 CI (`.github/workflows/ci.yml`) runs clippy + tests on every PR. Releases are
@@ -88,7 +101,8 @@ release PR → merge the Renovate bump in `homelab`.
 
 Relay env: `PAGER_RELAY_ADDR` (`127.0.0.1:4500`), `PAGER_VAPID_FILE`
 (`vapid.json`), `PAGER_PWA_DIR` (`pwa`), `PAGER_BRIDGE_PUBKEY` (required for
-bridge endpoints), `PAGER_SUBS_FILE` (optional persistence), `PAGER_PAIR_TTL_SECS`.
+bridge endpoints; one key or several, comma-separated), `PAGER_SUBS_FILE`
+(optional persistence), `PAGER_PAIR_TTL_SECS`.
 
 Bridge env: `PAGER_RELAY_URL`, `PAGER_CAPTURE_ADDR` (`127.0.0.1:4500`),
 `PAGER_CONFIG_DIR` (`~/.config/pager`), `PAGER_QUIET` (e.g. `22-7`, local-time
@@ -185,6 +199,28 @@ and as a desktop notification, at most twice a day per device:
 Devices paired before acknowledgements existed report `n/a` and are never
 faulted; re-pair one to start tracking it. The PWA shows the same state on the
 device itself, in the Function sheet and as a caution strip.
+
+## Sending from something other than the extension
+
+Anything that can reach a bridge's capture endpoint can page the phone, and
+needs no key of its own — the bridge does the sealing:
+
+```bash
+curl -s -X POST http://127.0.0.1:4500/capture \
+  -H 'content-type: application/json' \
+  -d '{"source":"tracon","title":"Review — feat: the thing","body":"+12 −3",
+       "url":"https://tracon.example/reviews/r1","tag":"tracon-review-r1"}'
+```
+
+`title` and `body` are what shows (at least one must be non-empty). `source`
+labels the sender. `url`, when present, is where tapping the notification
+lands; `tag` is the banner's replacement key, which defaults to `source` — mail
+collapses under one banner that way, so a sender that wants each item to stand
+on its own should send a distinct tag. Both are optional and a device running
+an older service worker ignores them.
+
+Responses: `200` pushed, `204` dropped by rules (quiet hours, empty), `202` no
+devices paired, `502` the relay refused.
 
 ## Local development
 

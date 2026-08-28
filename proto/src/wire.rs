@@ -50,14 +50,26 @@ pub struct Enrollment {
 }
 
 /// The cleartext a notification carries once the device opens its [`SealedBlob`].
+///
+/// `url` and `tag` are additive and optional: a device running an older
+/// service worker ignores them, and a sender that omits them behaves exactly
+/// as before, so neither the contract version nor the AAD moves.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Notif {
     pub title: String,
     pub body: String,
-    /// Origin app: "teams" | "outlook" (or "test").
+    /// Origin app: "teams" | "outlook" | "tracon" (or "test").
     pub source: String,
     /// Unix milliseconds the bridge stamped.
     pub ts: u64,
+    /// Where tapping the notification should land. Absent means the app root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The banner's replacement key. Absent falls back to `source`, which is
+    /// what collapses a run of mail into one banner; a sender that wants each
+    /// item to stand on its own sets a distinct tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 /// `POST /api/subscribe` (bridge-authenticated): register a device's push

@@ -26,7 +26,11 @@ pub enum SealError {
 /// Seal `plaintext` to a recipient's X25519 public key (hex). Generates a fresh
 /// random data key, seals the payload under it with `aad`, and wraps the data key
 /// to the recipient. Only the recipient's secret can recover it.
-pub fn seal_to(recipient_x25519_hex: &str, plaintext: &[u8], aad: &[u8]) -> Result<SealedBlob, SealError> {
+pub fn seal_to(
+    recipient_x25519_hex: &str,
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<SealedBlob, SealError> {
     let recipient = parse_public(recipient_x25519_hex)?;
     let data_key = DataKey::generate();
     let sealed = data_key.seal(plaintext, aad);
@@ -44,9 +48,13 @@ pub fn open_blob(identity: &Identity, blob: &SealedBlob, aad: &[u8]) -> Result<V
     let wk = B64.decode(&blob.wk).map_err(|_| SealError::BadBase64)?;
     let ct = B64.decode(&blob.ct).map_err(|_| SealError::BadBase64)?;
     let wrapped = WrappedKey::from_bytes(&wk).map_err(|_| SealError::BadFormat)?;
-    let data_key = identity.unwrap_key(&wrapped).map_err(|_| SealError::OpenFailed)?;
+    let data_key = identity
+        .unwrap_key(&wrapped)
+        .map_err(|_| SealError::OpenFailed)?;
     let sealed = Sealed::from_bytes(&ct).map_err(|_| SealError::BadFormat)?;
-    data_key.open(&sealed, aad).map_err(|_| SealError::OpenFailed)
+    data_key
+        .open(&sealed, aad)
+        .map_err(|_| SealError::OpenFailed)
 }
 
 fn parse_public(hex_str: &str) -> Result<PublicKey, SealError> {
