@@ -48,4 +48,8 @@ ENV PAGER_CONFIG_DIR=/state \
     PAGER_CAPTURE_ADDR=0.0.0.0:4500 \
     PAGER_RELAY_URL=https://pager.0x69.xyz
 EXPOSE 4500
-CMD ["pager-bridge", "run"]
+# Split, not one CMD: Kubernetes `args` replaces CMD wholesale and leaves
+# ENTRYPOINT alone. With the binary in CMD, a deployment that says
+# `args: ["run"]` — the obvious thing to write — execs "run" and crash-loops.
+ENTRYPOINT ["pager-bridge"]
+CMD ["run"]
