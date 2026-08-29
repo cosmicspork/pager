@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/cosmicspork/pager/compare/v0.5.2...v0.6.0) (2026-08-28)
+
+
+### Features
+
+* authorize several bridges and carry a link on a notification ([#22](https://github.com/cosmicspork/pager/issues/22)) ([6e02962](https://github.com/cosmicspork/pager/commit/6e029624c805cf4c77333ff647fe5a2869ac9d89))
+
 ## [0.5.2](https://github.com/cosmicspork/pager/compare/v0.5.1...v0.5.2) (2026-08-21)
 
 
