@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/cosmicspork/pager/compare/v0.6.0...v0.6.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **bridge:** give the image an entrypoint so a deployment's args work ([#24](https://github.com/cosmicspork/pager/issues/24)) ([74aa12e](https://github.com/cosmicspork/pager/commit/74aa12e9b6fa665d8d1ec90393936e5f48c12d68))
+
 ## [0.6.0](https://github.com/cosmicspork/pager/compare/v0.5.2...v0.6.0) (2026-08-28)
 
 
