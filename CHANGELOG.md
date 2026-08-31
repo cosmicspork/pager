@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.2](https://github.com/cosmicspork/pager/compare/v0.6.1...v0.6.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **ci:** build the relay image from the relay stage, not the last one ([a998f7e](https://github.com/cosmicspork/pager/commit/a998f7ecdc56c4618e1852b8e507f6330f5e101c))
+* **ci:** build the relay image from the relay stage, not the last one ([51abd9c](https://github.com/cosmicspork/pager/commit/51abd9c455fa83ab92c316b42072aa6f6733834a))
+
 ## [0.6.1](https://github.com/cosmicspork/pager/compare/v0.6.0...v0.6.1) (2026-08-29)
 
 
