@@ -43,9 +43,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # Cluster and runner are both amd64, so a single-platform build is enough.
+      # `target` is required, not optional: the bridge stage is last in the
+      # Dockerfile, so an untargeted build silently tags it as the relay.
       - uses: docker/build-push-action@v6
         with:
           context: .
+          target: relay
           platforms: linux/amd64
           push: true
           tags: |
@@ -65,3 +68,12 @@ jobs:
             ghcr.io/cosmicspork/pager-bridge:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # Each image must carry its own binary and not the other's. A mislabelled
+      # image is not a build failure — it crash-loops in the cluster instead.
+      - name: assert each image carries the right binary
+        run: |
+          v=${{ needs.release-please.outputs.version }}
+          docker run --rm --entrypoint /bin/sh ghcr.io/cosmicspork/pager:$v -c \
+            'test -x /usr/local/bin/pager-relay && ! test -e /usr/local/bin/pager-bridge'
+          docker run --rm --entrypoint /bin/sh ghcr.io/cosmicspork/pager-bridge:$v -c \
+            'test -x /usr/local/bin/pager-bridge && ! test -e /usr/local/bin/pager-relay'

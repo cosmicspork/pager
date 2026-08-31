@@ -17,7 +17,9 @@ COPY . .
 RUN wasm-pack build wasm --release --target no-modules --out-dir /build/pwa/wasm --out-name pager_wasm
 RUN cargo build -p pager-relay -p pager-bridge --release
 
-FROM debian:bookworm-slim
+# Named, and built with `target: relay`: this is no longer the last stage, and a
+# plain `docker build` would produce the bridge below instead.
+FROM debian:bookworm-slim AS relay
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates libssl3 libcurl4 \
     && rm -rf /var/lib/apt/lists/*
