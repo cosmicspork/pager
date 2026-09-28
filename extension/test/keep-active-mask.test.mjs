@@ -61,58 +61,69 @@ async function installMask() {
     EventTarget: FakeEventTarget,
     window,
     document,
+    location: { origin: 'https://teams.microsoft.com' },
   });
   const source = await readFile(new URL('../keep-active-mask.js', import.meta.url), 'utf8');
   vm.runInContext(source, context);
   return { window, document };
 }
 
-test('suppresses lifecycle notifications only while masking is enabled', async () => {
+test('starts unmasked, masks only when enabled, and restores descriptors/listeners on exit', async () => {
   const { window, document } = await installMask();
   let visibilityChanges = 0;
   let blurs = 0;
-
   document.addEventListener('visibilitychange', () => visibilityChanges++);
   window.addEventListener('blur', () => blurs++, true);
-
   document.dispatchEvent(event('visibilitychange'));
-  window.dispatchEvent(event('blur'));
-  assert.equal(visibilityChanges, 0);
-  assert.equal(blurs, 0);
-
-  window.dispatchEvent(event('message', {
-    source: window,
-    data: {
-      __pagerControl: true,
-      control: 'config',
-      config: { keepActive: false, keepActiveMask: false },
-    },
-  }));
-
-  document.dispatchEvent(event('visibilitychange'));
-  window.dispatchEvent(event('blur'));
   assert.equal(visibilityChanges, 1);
+  assert.equal(document.hidden, true);
+
+  const config = (keepActive, keepActiveMask) => window.dispatchEvent(event('message', {
+    source: window, origin: 'https://teams.microsoft.com',
+    data: { __pagerControl: true, control: 'config', config: { keepActive, keepActiveMask } },
+  }));
+  config(true, false);
+  assert.equal(document.hidden, true);
+  config(true, true);
+  assert.equal(document.hidden, false);
+  assert.equal(document.hasFocus(), true);
+  let laterVisibility = 0;
+  document.addEventListener('visibilitychange', () => laterVisibility++);
+  document.dispatchEvent(event('visibilitychange'));
+  window.dispatchEvent(event('blur'));
+  assert.equal(visibilityChanges, 2);
+  assert.equal(laterVisibility, 0);
   assert.equal(blurs, 1);
+  config(false, true);
+  assert.equal(document.hidden, true);
+  assert.equal(document.hasFocus(), false);
+  document.dispatchEvent(event('visibilitychange'));
+  window.dispatchEvent(event('blur'));
+  assert.equal(visibilityChanges, 3);
+  assert.equal(laterVisibility, 1);
+  assert.equal(blurs, 2);
+  config(true, true);
+  config(false, true);
+  document.dispatchEvent(event('visibilitychange'));
+  assert.equal(visibilityChanges, 4);
 });
 
-test('leaves focus and blur alone when they are only passing through window', async () => {
+test('leaves focus and blur alone when they are only passing through window while active', async () => {
   const { window } = await installMask();
+  window.dispatchEvent(event('message', {
+    source: window, origin: 'https://teams.microsoft.com',
+    data: { __pagerControl: true, control: 'config', config: { keepActive: true, keepActiveMask: true } },
+  }));
   const element = {};
   let elementFocuses = 0;
   let elementBlurs = 0;
   let windowBlurs = 0;
-
   window.addEventListener('focus', () => elementFocuses++, true);
   window.addEventListener('blur', (ev) => (ev.target === window ? windowBlurs++ : elementBlurs++), true);
-
-  // An element's focus/blur reaches it through the capture phase on window.
-  // Blocking those would take out focus handling for the whole page.
   window.dispatchEvent(event('focus', { target: element }));
   window.dispatchEvent(event('blur', { target: element }));
   assert.equal(elementFocuses, 1);
   assert.equal(elementBlurs, 1);
-
-  // The window's own blur is the presence signal, and stays suppressed.
   window.dispatchEvent(event('blur'));
   assert.equal(windowBlurs, 0);
 });

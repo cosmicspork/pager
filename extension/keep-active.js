@@ -1,16 +1,11 @@
 // Keeps the Teams web app from deciding you are idle, by giving it the input
 // events its idle timer is watching for. Runs in the page's MAIN world so the
 // events land on the same document Teams listens to.
-//
-// Registered by background.js only while the feature is on — if the toggle is
-// off this file is not in the page at all. The config it receives afterwards
-// only carries the interval and live on/off for an already-loaded tab.
-//
-// Pairs with keep-active-mask.js, which handles the other half of the problem:
-// Teams also goes away on tab visibility and window focus, not just input.
-
+// Effective activity is delivered at runtime; this script starts inert.
 (function () {
   'use strict';
+  if (globalThis.__pagerKeepActiveInstalled) return;
+  globalThis.__pagerKeepActiveInstalled = true;
 
   const MARK = '__pagerControl';
   const DEFAULT_INTERVAL_MS = 240000;
@@ -22,9 +17,7 @@
   const SLACK_MS = 5000;
 
   let intervalMs = DEFAULT_INTERVAL_MS;
-  let enabled = true;
-  // The page just loaded, which is real activity — start the clock rather than
-  // firing a synthetic pulse immediately.
+  let enabled = false;
   let lastPulse = Date.now();
 
   // Events dispatched from page JavaScript are always untrusted. Do not try to
@@ -65,13 +58,16 @@
 
   function applyConfig(c) {
     if (!c) return;
-    if (typeof c.keepActive === 'boolean') enabled = c.keepActive;
+    if (typeof c.keepActive === 'boolean') {
+      if (c.keepActive && !enabled) lastPulse = Date.now();
+      enabled = c.keepActive;
+    }
     const n = Number(c.keepActiveIntervalSec);
     if (Number.isFinite(n) && n > 0) intervalMs = n * 1000;
   }
 
   window.addEventListener('message', function (ev) {
-    if (ev.source !== window) return;
+    if (ev.source !== window || ev.origin !== location.origin) return;
     const d = ev.data;
     if (!d || d[MARK] !== true) return;
     if (d.control === 'pulse') pulse();
@@ -80,6 +76,5 @@
 
   setInterval(pulse, TICK_MS);
 
-  // relay.js asks the worker for the current config on load and posts it back
-  // here; until it arrives the defaults above are in effect.
+  // The relay supplies current effective state; until then no pulses fire.
 })();

@@ -1,84 +1,76 @@
-// The popup carries only the three toggles worth flipping mid-session; the
-// rest lives in options.html.
-
-import { getSettings, setSettings } from './settings.js';
-
-const TOGGLES = ['captureTeams', 'captureOutlook', 'keepActive'];
+import { getSettings, setSettings, effectiveSchedule, nextScheduleChange } from './settings.js';
 
 function flash() {
-  const el = document.getElementById('saved');
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 900);
+  const element = document.getElementById('saved');
+  element.classList.add('show');
+  setTimeout(() => element.classList.remove('show'), 900);
 }
-
-function ago(ts) {
-  if (!ts) return 'never';
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (s < 60) return s + 's ago';
-  if (s < 3600) return Math.round(s / 60) + 'm ago';
-  return Math.round(s / 3600) + 'h ago';
+function ago(timestamp) {
+  if (!timestamp) return 'never';
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return seconds + 's ago';
+  if (seconds < 3600) return Math.round(seconds / 60) + 'm ago';
+  return Math.round(seconds / 3600) + 'h ago';
 }
-
-async function renderStatus(s) {
-  const sess = await chrome.storage.session.get(['status', 'teamsHealth']);
-  const st = sess.status || {};
-  const bridge = document.getElementById('stBridge');
-  if (st.bridgeOk === undefined) {
-    bridge.textContent = 'no events yet';
-    bridge.classList.remove('warn');
-  } else if (st.bridgeOk) {
-    bridge.textContent = 'ok';
-    bridge.classList.remove('warn');
-  } else {
-    bridge.textContent = st.bridgeError || 'unreachable';
-    bridge.classList.add('warn');
+function setValue(id, value) {
+  const select = document.getElementById(id);
+  select.querySelector('option[data-invalid]')?.remove();
+  if (![...select.options].some((option) => option.value === value)) {
+    const invalid = new Option('Invalid saved setting', value);
+    invalid.dataset.invalid = 'true';
+    select.add(invalid);
   }
-  // Capture reporting in is the difference between "nobody messaged you" and
-  // "Teams moved its store and this has been dead for a week".
+  select.value = value;
+}
+function stateText(mode, current, invalid, next) {
+  if (invalid) return 'Invalid settings · off until corrected';
+  if (mode !== 'scheduled') return 'Manual override · ' + (current ? 'on' : 'off');
+  return (current ? 'on' : 'off') + (next ? ' · next ' + next.toLocaleString() : ' · no upcoming change');
+}
+async function renderStatus(settings) {
+  const session = await chrome.storage.session.get(['status', 'teamsHealth', 'outlookHealth']);
+  const state = session.status || {};
+  const collector = document.getElementById('stCollector');
+  collector.textContent = state.collectorOk ? 'connected' : state.collectorError || 'not connected';
+  collector.classList.toggle('warn', !state.collectorOk);
+  const usage = await chrome.runtime.sendMessage({ type: 'pager-outbox-status' }).catch(() => ({}));
+  document.getElementById('stPending').textContent = usage?.count ?? state.pending ?? '—';
   const teams = document.getElementById('stTeams');
-  const t = sess.teamsHealth;
-  if (!s.captureTeams) {
-    // A warning about a capture the user turned off on purpose only teaches
-    // them to ignore the warning.
-    teams.textContent = 'off';
-    teams.classList.remove('warn');
-  } else if (!t) {
-    teams.textContent = 'no tab open';
-    teams.classList.remove('warn');
-  } else if (!t.ok) {
-    teams.textContent = 'failing';
-    teams.classList.add('warn');
-  } else if (Date.now() - t.at > 5 * 60 * 1000) {
-    teams.textContent = 'stale · ' + ago(t.at);
-    teams.classList.add('warn');
-  } else {
-    teams.textContent = `ok · ${t.conversations} convs · ${t.readMs}ms`;
-    teams.classList.remove('warn');
-  }
-
-  document.getElementById('stLast').textContent =
-    st.lastEventAt ? ago(st.lastEventAt) + (st.lastEventSource ? ' · ' + st.lastEventSource : '') : 'never';
-  document.getElementById('stCount').textContent = st.forwarded || 0;
+  const teamStatus = session.teamsHealth;
+  teams.textContent = !settings.captureTeams ? 'off' : !teamStatus ? 'no tab open' : !teamStatus.ok ? 'degraded' :
+    Date.now() - teamStatus.at > 180000 ? 'stale · ' + ago(teamStatus.at) : 'ok · ' + teamStatus.conversations + ' conversations';
+  teams.classList.toggle('warn', settings.captureTeams && !!teamStatus && (!teamStatus.ok || Date.now() - teamStatus.at > 180000));
+  const outlook = document.getElementById('stOutlook');
+  const mail = session.outlookHealth;
+  outlook.textContent = !settings.captureOutlook ? 'off' : !mail ? 'no tab open' :
+    Date.now() - mail.at > 180000 ? 'stale · ' + ago(mail.at) : mail.state + (mail.reason ? ' · ' + mail.reason : '');
+  outlook.classList.toggle('warn', settings.captureOutlook && !!mail && (mail.state !== 'ok' || Date.now() - mail.at > 180000));
+  document.getElementById('stLast').textContent = ago(state.lastEventAt);
 }
-
 async function render() {
-  const s = await getSettings();
-  for (const key of TOGGLES) document.getElementById(key).checked = s[key];
-  document.getElementById('keepActiveHint').textContent =
-    'pulse every ' + s.keepActiveIntervalSec + 's' + (s.keepActiveMask ? ' · masking visibility' : '');
-  await renderStatus(s);
+  const settings = await getSettings();
+  document.getElementById('captureTeams').checked = settings.captureTeams;
+  document.getElementById('captureOutlook').checked = settings.captureOutlook;
+  setValue('pagingMode', settings.pagingMode);
+  setValue('keepActiveMode', settings.keepActiveMode);
+  const effective = effectiveSchedule(settings);
+  const pagingNext = nextScheduleChange({ ...settings, keepActiveMode: 'always_off' });
+  const activityNext = nextScheduleChange({ ...settings, pagingMode: 'always_notify' });
+  document.getElementById('pagingState').textContent = stateText(settings.pagingMode, effective.pagingAllowed, settings.pagingInvalid, pagingNext);
+  document.getElementById('activityState').textContent = stateText(settings.keepActiveMode, effective.keepActive, settings.keepActiveInvalid, activityNext);
+  await renderStatus(settings);
 }
-
-for (const key of TOGGLES) {
-  document.getElementById(key).addEventListener('change', async (e) => {
-    await setSettings({ [key]: e.target.checked });
-    flash();
-    await render();
+for (const key of ['captureTeams', 'captureOutlook']) {
+  document.getElementById(key).addEventListener('change', async (event) => {
+    await setSettings({ [key]: event.target.checked });
+    flash(); await render();
   });
 }
-
-document.getElementById('options').addEventListener('click', () => {
-  chrome.runtime.openOptionsPage();
-});
-
+for (const key of ['pagingMode', 'keepActiveMode']) {
+  document.getElementById(key).addEventListener('change', async (event) => {
+    await setSettings({ [key]: event.target.value });
+    flash(); await render();
+  });
+}
+document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
 render();

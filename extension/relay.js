@@ -1,37 +1,37 @@
-// Isolated-world bridge between the MAIN-world scripts and the extension
-// service worker. The MAIN-world scripts can't reach chrome.* APIs; this can.
-//
-// Both directions run through here: captured events out to the worker, and
-// control messages (keep-alive pokes, config changes) back into the page.
-
-const CONTROL = '__pagerControl';
-
-function toPage(msg) {
-  try {
-    window.postMessage(Object.assign({ [CONTROL]: true }, msg), location.origin);
-  } catch (e) {}
-}
-
-// MAIN world → service worker.
-window.addEventListener('message', function (ev) {
-  if (ev.source !== window) return;
-  const d = ev.data;
-  if (!d || d.__pagerEvent !== true || !d.ev) return;
-  try { chrome.runtime.sendMessage({ type: 'pager-event', ev: d.ev }); } catch (e) {}
-});
-
-// Service worker → MAIN world.
-chrome.runtime.onMessage.addListener(function (msg) {
-  if (!msg || msg.type !== 'pager-control') return;
-  if (msg.control === 'pulse') toPage({ control: 'pulse' });
-  else if (msg.control === 'config') toPage({ control: 'config', config: msg.config });
-});
-
-// The MAIN-world scripts start on their built-in defaults because they can't
-// read storage. Pull the real config once on load and hand it over.
-try {
-  chrome.runtime.sendMessage({ type: 'pager-get-config' }, function (config) {
-    if (chrome.runtime.lastError || !config) return;
-    toPage({ control: 'config', config: config });
+// The isolated world bridges page observations to the extension worker.
+(() => {
+  if (globalThis.__pagerRelayInstalled) return;
+  globalThis.__pagerRelayInstalled = true;
+  const toPage = (message) => {
+    try { window.postMessage({ __pagerControl: true, ...message }, location.origin); } catch {}
+  };
+  window.addEventListener('message', async (message) => {
+    if (message.source !== window || message.origin !== location.origin) return;
+    const data = message.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.__pagerEvent === true) {
+      const ev = data.ev;
+      if (!ev || typeof ev !== 'object' || !/^[0-9a-f-]{36}$/i.test(ev.eventId || '')) return;
+      if (typeof ev.message?.body === 'string' && ev.message.body.length > 4 * 1024 * 1024) return;
+      try {
+        const ack = await chrome.runtime.sendMessage({ type: 'pager-event', ev });
+        toPage({ control: 'ack', eventId: ev.eventId, ack });
+      } catch { toPage({ control: 'ack', eventId: ev.eventId, ack: { ok: false, error: 'worker_unavailable' } }); }
+    } else if (data.__pagerRequest === true && /^[0-9a-f-]{36}$/i.test(data.requestId || '') &&
+               ['pager-sync-get', 'pager-sync-put', 'pager-lease'].includes(data.request?.type)) {
+      try {
+        const response = await chrome.runtime.sendMessage(data.request);
+        toPage({ control: 'response', requestId: data.requestId, response });
+      } catch { toPage({ control: 'response', requestId: data.requestId, response: { ok: false } }); }
+    }
   });
-} catch (e) {}
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== 'pager-control') return;
+    if (['pulse', 'config', 'poll', 'reimport'].includes(message.control)) {
+      toPage({ control: message.control, config: message.config });
+    }
+  });
+  chrome.runtime.sendMessage({ type: 'pager-get-config' })
+    .then((config) => { if (config) toPage({ control: 'config', config }); })
+    .catch(() => {});
+})();

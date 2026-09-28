@@ -8,7 +8,7 @@
 </head>
 <body>
   <h1>Pager</h1>
-  <p class="sub">capture &amp; presence</p>
+  <p class="sub">capture, paging &amp; Teams activity</p>
 
   <h2>Capture</h2>
   <div class="row">
@@ -20,20 +20,34 @@
     <input type="checkbox" id="captureOutlook" />
   </div>
 
-  <h2>Presence</h2>
-  <div class="row">
-    <label for="keepActive">
-      <span class="name">Keep Teams active</span>
-      <span class="hint" id="keepActiveHint"></span>
-    </label>
-    <input type="checkbox" id="keepActive" />
+  <h2>Paging</h2>
+  <div class="field">
+    <label for="pagingMode"><span class="name">Phone notifications</span></label>
+    <select id="pagingMode">
+      <option value="scheduled">Scheduled</option>
+      <option value="always_notify">Always notify</option>
+      <option value="always_silent">Always silent</option>
+    </select>
+    <span class="hint" id="pagingState"></span>
+  </div>
+
+  <h2>Teams activity</h2>
+  <div class="field">
+    <label for="keepActiveMode"><span class="name">Keep Teams active</span></label>
+    <select id="keepActiveMode">
+      <option value="scheduled">Scheduled</option>
+      <option value="always_on">Always on</option>
+      <option value="always_off">Always off</option>
+    </select>
+    <span class="hint" id="activityState"></span>
   </div>
 
   <div class="status">
-    <div><span>bridge</span><span class="val" id="stBridge">—</span></div>
+    <div><span>collector</span><span class="val" id="stCollector">—</span></div>
+    <div><span>pending</span><span class="val" id="stPending">—</span></div>
     <div><span>teams capture</span><span class="val" id="stTeams">—</span></div>
-    <div><span>last event</span><span class="val" id="stLast">—</span></div>
-    <div><span>forwarded</span><span class="val" id="stCount">—</span></div>
+    <div><span>outlook capture</span><span class="val" id="stOutlook">—</span></div>
+    <div><span>last archive</span><span class="val" id="stLast">—</span></div>
   </div>
 
   <div class="footer">
