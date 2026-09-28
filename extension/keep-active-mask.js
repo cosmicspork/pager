@@ -2,18 +2,13 @@
 // Away, because it also watches whether the tab is visible, whether the window
 // has focus, and — where the browser offers it — the Idle Detection API.
 //
-// This masks those three signals. It has to run synchronously at
-// document_start, before the app reads or caches any of them, which is why it
-// is a separate file from keep-active.js: its "am I enabled?" answer is
-// whether background.js registered it at all, with no async settings read in
-// between.
-//
-// This is the most invasive thing the extension does — it changes what the
-// page observes rather than only reading. Everything patched here is restored
-// on a live toggle-off, and it is only ever registered for Teams hosts.
+// Installed inert: configuration activates masking only while scheduled
+// activity and the mask preference are both enabled.
 
 (function () {
   'use strict';
+  if (globalThis.__pagerKeepActiveMaskInstalled) return;
+  globalThis.__pagerKeepActiveMaskInstalled = true;
 
   const MARK = '__pagerControl';
   const saved = {};
@@ -92,15 +87,16 @@
     active = false;
     try {
       setLifecycleBlockers(false);
-      if (saved.hidden) Object.defineProperty(Document.prototype, 'hidden', saved.hidden);
-      if (saved.visibilityState) Object.defineProperty(Document.prototype, 'visibilityState', saved.visibilityState);
-      if (saved.hasFocus) Object.defineProperty(Document.prototype, 'hasFocus', saved.hasFocus);
+      for (const key of ['hidden', 'visibilityState', 'hasFocus']) {
+        if (saved[key]) Object.defineProperty(Document.prototype, key, saved[key]);
+        else delete Document.prototype[key];
+      }
       if (saved.IdleDetector) Object.defineProperty(window, 'IdleDetector', saved.IdleDetector);
     } catch (e) {}
   }
 
   window.addEventListener('message', function (ev) {
-    if (ev.source !== window) return;
+    if (ev.source !== window || ev.origin !== location.origin) return;
     const d = ev.data;
     if (!d || d[MARK] !== true || d.control !== 'config') return;
     const c = d.config || {};
@@ -108,5 +104,4 @@
     else restore();
   });
 
-  install();
 })();

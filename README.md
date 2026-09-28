@@ -1,18 +1,18 @@
 # Pager
 
-A browser-resident capture surface over Teams and Outlook web that forwards
-message events to your own devices, built because Microsoft Graph is closed off
-by tenant policy. Capture happens in the browser you're already signed into;
-delivery is end-to-end encrypted through a relay you host, to a PWA on your
-phone.
+A browser-resident communications archive and pager for Teams and Outlook web,
+built because Microsoft Graph is closed off by tenant policy. The Chrome
+extension captures from signed-in tabs and writes to a private local Rust/SQLite
+collector before eligible notifications reach the existing local bridge.
+Agents can query the retained archive through read-only stdio MCP; phone delivery
+remains end-to-end encrypted through the bridge and hosted relay.
 
 ## Architecture
 
 ```
-Chrome extension  →  local bridge (Rust)  →  homelab relay (Rust)  →  PWA (iOS/Android)
-  capture events     seal + sign + rules     ciphertext only,           unseal in the
-  (Teams IndexedDB,  (svastha-core),         VAPID Web Push fan-out      service worker,
-   OWA SignalR)       QR device pairing       (zero-knowledge)            showNotification
+Chrome extension → local collector (Rust + SQLite/FTS5) → local bridge (Rust) → relay → PWA
+  Teams cache       archive + one-year retention      seal + sign          ciphertext  unseal
+  Outlook read API  read-only stdio MCP for agents     QR pairing          Web Push    + display
 ```
 
 The relay only ever sees ciphertext: the bridge seals each event to the paired
@@ -25,15 +25,15 @@ relay never holds a key that can read a message or forge an enrollment.
 
 - `proto/` — shared wire contract: sealed-blob framing, relay-auth headers, and
   the device/notify JSON shapes used by the relay, bridge, and WASM.
-- `extension/` — Chrome MV3 capture extension. Posts events to the bridge and
-  can optionally simulate Teams activity. Toggles are in its popup/options page.
-  Teams capture reads the app's own IndexedDB store (Teams keeps its messaging
-  stack in a Web Worker and never hands the page the text, and the old
-  `Notification` hook went silent whenever keep-active was on).
+- `extension/` — Chrome MV3 capture extension. Persists captures to a durable
+  IndexedDB outbox and delivers them to the local collector; independent
+  local-time paging-silence and Teams-activity schedules live in popup/options.
+- `collector/` — local Rust ingestion server, SQLite/FTS5 archive and read-only
+  stdio MCP tool server. Archive writes commit before eligible paging; it does
+  not store bridge keys or participate in device encryption.
 - `bridge/` — Rust local bridge: holds the keys, seals + signs + runs the rules,
-  drives QR pairing, forwards ciphertext to the relay.
-- `relay/` — Rust (Axum) relay: subscriptions + Web Push fan-out, ciphertext only.
-- `wasm/` — device-side WASM (`pager-wasm`): identity, enrollment sealing, decrypt.
+  drives QR pairing, forwards ciphertext to the relay. Other bridge clients
+  retain their existing direct path.
 - `pwa/` — the device app (static; served by the relay; WASM built into `pwa/wasm`).
 - `spike/` — throwaway Tampermonkey discovery scripts. Superseded by `extension/`.
 
@@ -70,13 +70,16 @@ one it registered at enrollment.
   reports the build it is actually running, and says so when it no longer
   matches the relay — an installed PWA that keeps serving old code otherwise
   looks completely healthy.
+- **Collector** runs locally at `127.0.0.1:4501` (`contrib/pager-collector.service`
+  is an optional user-systemd unit). It requires a local ingestion token and
+  persists the archive under `~/.local/share/pager/communications` by default.
+  It is not deployed to the relay or exposed on the network.
 - **Bridge** runs on your machine as a `systemd --user` service
   (`contrib/pager-bridge.service`), listening on `127.0.0.1:4500` for the
-  extension and forwarding to `PAGER_RELAY_URL`. It holds the paired-device
-  list in memory, so `pair` and `unpair` post to its loopback `/reload` to keep
-  it in step; if that post can't be delivered they say so, and restarting the
-  service has the same effect.
-
+  collector and other local senders, and forwarding to `PAGER_RELAY_URL`. It
+  holds the paired-device list in memory, so `pair` and `unpair` post to its
+  loopback `/reload` to keep it in step; if that post can't be delivered they
+  say so, and restarting the service has the same effect.
   More than one bridge may be authorized: `PAGER_BRIDGE_PUBKEY` takes a
   comma-separated list. Each bridge holds its own identity and device pairings
   and seals its own payloads, so authorizing a second sender widens who may
@@ -86,9 +89,10 @@ one it registered at enrollment.
   phone while every laptop is asleep. Pair the phone to each bridge you want to
   hear from; `pager-bridge id` prints the key to add.
 
-  The capture endpoint is unauthenticated by design — it is reached over
-  loopback, or over a pod network with only its intended senders routed to it.
-  Never expose it beyond that.
+  The bridge capture endpoint remains unauthenticated by design; restrict it
+  to loopback or a pod network with only intended senders. The collector
+  capture endpoint is separately bearer-token protected and loopback-only.
+  Neither endpoint should be exposed beyond its intended local boundary.
 
 ### Releases & deploys
 
@@ -106,32 +110,54 @@ bridge endpoints; one key or several, comma-separated), `PAGER_SUBS_FILE`
 
 Bridge env: `PAGER_RELAY_URL`, `PAGER_CAPTURE_ADDR` (`127.0.0.1:4500`),
 `PAGER_CONFIG_DIR` (`~/.config/pager`), `PAGER_QUIET` (e.g. `22-7`, local-time
-quiet hours).
+quiet hours). Collector env: `PAGER_COLLECTOR_DIR`
+(`~/.local/share/pager/communications`).
 
 ## Setup runbook
 
-**1. Bridge (already installed as a service on the keyed host).**
+**1. Install the collector and start it locally.**
+
+```bash
+cargo install --path collector --locked
+pager-collector init        # creates archive.sqlite3 and ingest-token; does not print the token
+pager-collector serve       # loopback 127.0.0.1:4501; leave running or enable the optional user unit
+```
+
+The data directory is private (0700); the SQLite database and ingestion token
+are 0600. WAL files stay there. SQLite is plaintext, **not encrypted at rest**:
+limit access and include it only in private backups. The collector prunes
+messages older than a rolling 365 days at startup and hourly. `pager-collector
+prune` runs the same maintenance manually. OS snapshots and older backups are
+outside logical retention.
+
+**2. Bridge (already installed as a service on the keyed host).**
 
 ```bash
 pager-bridge id      # prints PAGER_BRIDGE_PUBKEY (already set on the relay)
 pager-bridge ping    # confirms the relay is reachable and trusts this bridge
 ```
 
-**2. Install the capture extension** in your daily Chrome:
+**3. Install the capture extension** in your daily Chrome:
 `chrome://extensions` → enable Developer mode → **Load unpacked** → select
-`extension/`. Stay signed into Teams/Outlook web. The extension posts captured
-events to the bridge on `127.0.0.1:4500`.
+`extension/`. Stay signed into Teams/Outlook web. In extension options, enter
+the token from the private `ingest-token` file into **Collector token**; it is
+held in `chrome.storage.local`, not sync storage. The default collector URL is
+`http://localhost:4501/capture` and the downstream bridge stays at
+`http://localhost:4500/capture`. Reload already-open tabs once to install
+capture scripts.
 
-Its toolbar popup toggles Teams capture, Outlook capture, and *keep Teams
-active* (off by default — sends best-effort synthetic activity while the tab is
-open), and shows whether the bridge is reachable. The options page has the
-pulse interval and the capture endpoint. See `extension/README.md`.
+The popup controls capture toggles, paging mode and Teams activity mode.
+Choose **Scheduled** only after configuring daily local-time windows in options;
+**Always notify / Always silent** and **Always on / Always off** are persistent
+manual overrides. Invalid saved schedules fail closed and show an error. A
+silent window stops only phone notifications, never collection. See
+`extension/README.md`.
 
-**3. Install the PWA on your phone.** In Safari (iOS) open
+**4. Install the PWA on your phone.** In Safari (iOS) open
 `https://pager.0x69.xyz`, then Share → **Add to Home Screen**. Open the installed
 app once so its service worker registers.
 
-**4. Pair the phone.**
+**5. Pair the phone.**
 
 ```bash
 pager-bridge pair --label iPhone
@@ -142,7 +168,7 @@ tap **Copy code**, open the installed Pager app, tap **Paste & pair**, and allow
 notifications. (On Android you can pair straight from the opened link.) The
 bridge prints `✓ paired …` once the device enrolls.
 
-**5. Confirm delivery.**
+**6. Confirm delivery.**
 
 ```bash
 pager-bridge test --message "hello from the bridge"
@@ -151,6 +177,36 @@ pager-bridge test --message "hello from the bridge"
 A notification should appear on the phone. After that, real Teams/Outlook events
 captured by the extension flow through automatically. (Teams suppresses
 notifications for your *own* messages — test with a message from someone else.)
+
+## Querying the local archive
+
+Run `pager-collector mcp` as a local **stdio** MCP subprocess with access to
+the same archive directory (or set `PAGER_COLLECTOR_DIR`). It exposes four
+read-only tools: `search_messages`, `get_thread`, `get_message` and
+`get_collection_status`. The MCP process opens the live SQLite WAL read-only;
+it cannot create/migrate/prune a missing database. Install it only for agents
+you trust with private communications; MCP read-only tools do not restrict a
+full filesystem-capable, unsandboxed agent. Do not expose the archive, token or
+MCP process through a hosted service.
+
+Search/collection status report source coverage, import progress and stale
+heartbeats. Teams includes available cached messages, **not** complete Teams
+history. Outlook retrieves retained personal Inbox and Sent Items through
+authenticated read actions in the open browser tab, plus thread context
+observed there; it does not import other folders/shared mailboxes or attachments.
+Bodies may be missing, truncated or deleted at the source. MCP responses bound
+search snippets, paginate results/bodies and mark captured text as untrusted
+data, not agent instructions. For a restored older SQLite backup with the
+same archive ID, use extension options → **Re-import from sources** to re-scan
+what is still available; restoration does not recover messages already gone
+from Teams cache or Outlook's retention window.
+
+Archive receipt does not mean phone delivery: the collector durably records an
+eligible page claim, then attempts the existing bridge once. A failed bridge
+attempt remains a local failure; it is not replayed, so the notification side
+is at-most-once while the archived message remains searchable. The existing
+bridge `PAGER_QUIET` setting still applies to all senders, including collector
+pages; extension overrides do not bypass that bridge-wide veto.
 
 ## Delivery health
 
@@ -225,12 +281,13 @@ devices paired, `502` the relay refused.
 ## Local development
 
 ```bash
-cargo test                                   # proto + bridge unit + integration
-node --test extension/test/*.test.mjs \
-     pwa/test/*.test.mjs                     # extension + service-worker tests
+cargo test -p pager-collector
+cargo test --workspace --exclude pager-wasm --exclude pager-collector
+node --test extension/test/*.test.mjs pwa/test/*.test.mjs
+cargo check -p pager-wasm --target wasm32-unknown-unknown
 wasm-pack build wasm --target no-modules \
-  --out-dir pwa/wasm --out-name pager_wasm   # build the device WASM
-cargo run -p pager-relay                     # serves http://127.0.0.1:4500 (needs vapid.json)
+  --out-dir pwa/wasm --out-name pager_wasm
+cargo run -p pager-relay
 ```
 
 `vapid.json` (VAPID keypair, gitignored) and `pwa/wasm/` (build output) are not

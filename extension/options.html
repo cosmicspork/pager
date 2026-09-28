@@ -21,14 +21,13 @@
   <div class="row">
     <label for="captureOutlook">
       <span class="name">Outlook capture</span>
-      <span class="hint">New mail, by reading the OWA notification channel.</span>
+      <span class="hint">Read retained Inbox and Sent bodies through your signed-in tab, plus observed threads.</span>
     </label>
     <input type="checkbox" id="captureOutlook" />
   </div>
   <p class="hint">
-    Off means the scripts are never injected — the extension registers content
-    scripts from these toggles rather than loading them and checking a flag.
-    Already-open tabs keep the old scripts until you reload them.
+    Off stops capture. Turning a source on in an already-open tab may require
+    reloading that tab for its capture script to install.
   </p>
 
   <h2>What Teams pages you for</h2>
@@ -70,19 +69,22 @@
     <input type="checkbox" id="teamsMuteSelf" />
   </div>
   <p class="hint">
-    Anything older than ten minutes is ignored regardless — Teams re-syncs a
-    pile of conversations on startup and on reconnect, and without that floor
-    every one of them would look new.
+    These choices only affect paging. Self messages, meeting chats, and older cached
+    messages are still archived while capture is enabled.
   </p>
 
-  <h2>Keep Teams active</h2>
-  <div class="row">
-    <label for="keepActive">
-      <span class="name">Enabled</span>
-      <span class="hint">Sends synthetic activity; Teams may ignore untrusted browser events.</span>
-    </label>
-    <input type="checkbox" id="keepActive" />
-  </div>
+  <h2>Daily paging silence</h2>
+  <p class="hint">Local time, every day. Silent windows never stop collection.</p>
+  <div id="pagingSilenceWindows" class="windows"></div>
+  <button type="button" id="addPagingWindow">Add silence window</button>
+  <span class="hint" id="pagingScheduleError"></span>
+
+  <h2>Daily Teams activity</h2>
+  <p class="hint">Local time, every day. Choose Scheduled in the popup to use these windows.</p>
+  <div id="keepActiveWindows" class="windows"></div>
+  <button type="button" id="addActivityWindow">Add activity window</button>
+  <span class="hint" id="activityScheduleError"></span>
+  <p class="hint">Synthetic activity is best-effort; disabling it restores visibility and focus but cannot force Teams Away.</p>
   <div class="field">
     <label for="keepActiveIntervalSec">
       <span class="name">Pulse interval (seconds)</span>
@@ -106,27 +108,26 @@
     <input type="checkbox" id="keepActiveMask" />
   </div>
 
-  <h2>Bridge</h2>
+  <h2>Local collector</h2>
   <div class="field">
-    <label for="bridgeUrl"><span class="name">Capture endpoint</span></label>
+    <label for="collectorUrl"><span class="name">Collector endpoint</span></label>
+    <input type="text" id="collectorUrl" spellcheck="false" />
+    <span class="hint">HTTP on literal localhost or 127.0.0.1 only.</span>
+  </div>
+  <div class="field">
+    <label for="collectorToken"><span class="name">Ingestion token</span></label>
+    <input type="password" id="collectorToken" autocomplete="off" spellcheck="false" />
+    <span class="hint">Copy from the local collector's private ingest-token file. Stored only in extension local storage.</span>
+  </div>
+  <div class="field">
+    <label for="bridgeUrl"><span class="name">Downstream bridge endpoint</span></label>
     <input type="text" id="bridgeUrl" spellcheck="false" />
-    <span class="hint" id="bridgeHint">
-      Must be http on localhost or 127.0.0.1 — the bridge holds the signing key
-      and is not meant to be reachable off this machine.
-    </span>
+    <span class="hint">The collector persists before forwarding eligible notifications to this loopback bridge.</span>
   </div>
+  <button type="button" id="reimport">Re-import from sources</button>
+  <span class="hint" id="reimportStatus"></span>
 
-  <h2>Diagnostics</h2>
-  <div class="row">
-    <label for="diagnostics">
-      <span class="name">Forward the install ping</span>
-      <span class="hint">
-        One <code>__diag</code> event per tab load, to confirm injection. Noise
-        once it works.
-      </span>
-    </label>
-    <input type="checkbox" id="diagnostics" />
-  </div>
+  <p class="hint">After restoring an older archive.sqlite3 backup with the same archive ID, use Re-import from sources. Only still-available messages can be re-imported.</p>
 
   <div class="footer">
     <button id="reset">Restore defaults</button>

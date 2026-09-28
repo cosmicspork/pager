@@ -98,20 +98,20 @@ input[type="checkbox"]:checked::after {
 input[type="checkbox"]:disabled { opacity: 0.4; cursor: default; }
 input[type="checkbox"]:focus-visible { outline: 1px solid var(--phos); outline-offset: 2px; }
 
-input[type="text"], input[type="number"], select {
+input[type="text"], input[type="password"], input[type="time"], input[type="number"], select {
   border: 1px solid var(--rule);
   background: rgba(0, 0, 0, 0.35);
   color: var(--phos);
   font: inherit;
   padding: 4px 6px;
 }
-input[type="text"]:focus, input[type="number"]:focus, select:focus {
+input[type="text"]:focus, input[type="password"]:focus, input[type="time"]:focus, input[type="number"]:focus, select:focus {
   outline: none;
   border-color: var(--phos);
 }
 input[type="number"] { width: 78px; }
-input[type="text"] { width: 100%; }
-input.invalid { border-color: var(--amber); color: var(--amber); }
+input[type="text"], input[type="password"] { width: 100%; }
+input.invalid, .windows.invalid input { border-color: var(--amber); color: var(--amber); }
 
 select { min-width: 220px; }
 /* The native menu renders in the OS palette, so options need an explicit
@@ -122,6 +122,10 @@ select:disabled { opacity: 0.4; cursor: default; }
 .field { padding: 5px 0; }
 .field .name { display: block; margin-bottom: 4px; }
 
+.window-row { justify-content: flex-start; flex-wrap: wrap; }
+.window-row label { display: inline-flex; align-items: center; gap: 6px; }
+.window-row input[type="time"] { width: 125px; }
+.window-row button { margin-left: auto; }
 button {
   border: 1px solid var(--phos-dim);
   background: transparent;

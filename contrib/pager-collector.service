@@ -1,0 +1,13 @@
+[Unit]
+Description=Pager communications collector (archive before paging)
+Documentation=https://github.com/cosmicspork/pager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/pager-collector serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

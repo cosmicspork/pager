@@ -1,106 +1,106 @@
-// Runs in the page's MAIN world (registered by background.js for Outlook hosts
-// only), so it patches the objects the app actually calls without inline
-// <script> injection. It only reads; it never alters the app's behavior.
-// Captured events are posted to the isolated relay via window.postMessage; the
-// relay and service worker handle getting them to the local bridge (page CSP
-// blocks a direct localhost fetch from here).
-//
-// Teams capture used to live here too, as a Notification-constructor wrapper.
-// That moved to teams-idb.js (reading the store directly); the wrapper is gone
-// rather than left in — on OWA it would fire on Outlook's own desktop
-// notifications and mislabel them source 'teams'.
-
-(function () {
+// MAIN-world Outlook observation. The adapter's authentication templates stay
+// inside outlook-read.js; only normalized archive events cross postMessage.
+(() => {
   'use strict';
-  const MARK = '__pagerEvent';
-  const RS = String.fromCharCode(30); // SignalR frame terminator (\x1e)
-  const IS_OUTLOOK = /(^|\.)outlook\./.test(location.host);
+  if (globalThis.__pagerOutlookCaptureInstalled) return;
+  globalThis.__pagerOutlookCaptureInstalled = true;
+  if (!/(^|\.)outlook\./.test(location.host)) return;
+  const adapter = window.__pagerOutlookRead;
+  if (!adapter) return;
+  const RS = String.fromCharCode(30);
+  const pending = new Map();
+  const unattributed = [];
+  const requests = new Map();
 
-  function emit(ev) {
-    try {
-      window.postMessage({ [MARK]: true, ev: Object.assign({ host: location.host, ts: Date.now() }, ev) }, location.origin);
-    } catch (e) {}
-  }
-
-  // Outlook pushes new-mail events over /owa/notificationchannel as SignalR
-  // over SSE: one long-lived streaming GET whose body is a sequence of
-  // RS-terminated, "data:"-prefixed SignalR frames. We read the stream
-  // incrementally, buffering across chunks since a frame can span reads.
-  //
-  // The fetch patch below stays gated to Outlook hosts even though
-  // registration is already Outlook-only: if this script ever lands anywhere
-  // else, the wrapper would sit in the hot path of every request and put this
-  // file at the top of every failed-fetch stack trace — which reads as "the
-  // extension broke the app" when the failure is the app's own.
-  function handleFrame(frame) {
-    let s = frame.trim();
-    if (!s) return;
-    if (s.indexOf('data:') === 0) s = s.slice(5).trim();
-    let obj;
-    try { obj = JSON.parse(s); } catch (e) { return; }
-    if (!obj || obj.type !== 1 || obj.target !== 'syncMessage') return;
-    const list = obj.arguments && obj.arguments[0];
-    if (!Array.isArray(list)) return;
-    list.forEach(function (item) {
-      const c = item && item.Conversation;
-      if (!c) return;
-      const sender = Array.isArray(c.UniqueSenders) ? c.UniqueSenders.join(', ') : '';
-      if (!sender && !c.ConversationTopic) return; // drop folder/non-mail syncs
-      emit({
-        source: 'outlook',
-        title: sender + ' — ' + (c.ConversationTopic || '(no subject)'),
-        body: 'unread=' + (c.GlobalUnreadCount != null ? c.GlobalUnreadCount : '?'),
-        sender: c.UniqueSenders || null,
-        subject: c.ConversationTopic || null,
-        conversationId: (c.ConversationId && c.ConversationId.Id) || null,
-        lastDelivery: c.LastDeliveryTime || null,
-        unread: c.GlobalUnreadCount,
-        hasAttachments: c.HasAttachments,
-        importance: c.Importance,
-      });
+  function emit(event) {
+    const key = event.kind + ':' + event.accountId + ':' + (event.message?.messageId || event.conversation?.conversationId || event.status?.state);
+    let item = pending.get(key);
+    if (!item) {
+      item = { event: { ...event, eventId: crypto.randomUUID() }, done: null };
+      pending.set(key, item);
+    }
+    return new Promise((resolve) => {
+      item.done = resolve;
+      const send = () => window.postMessage({ __pagerEvent: true, ev: item.event }, location.origin);
+      send();
+      setTimeout(() => { if (pending.get(key) === item) { send(); resolve(false); } }, 5000);
     });
   }
-
-  try {
-    const origFetch = window.fetch;
-    if (IS_OUTLOOK && origFetch && !origFetch.__pagerWrapped) {
-      const wrapped = function (input, init) {
-        let url;
-        try { url = (typeof input === 'string') ? input : (input && input.url); } catch (e) {}
-        const p = origFetch.apply(this, arguments);
-        try {
-          if (url && /\/owa\/notificationchannel/.test(url) && !/negotiate/.test(url)) {
-            p.then(function (resp) {
-              try {
-                const body = resp.clone().body;
-                if (!body || !body.getReader) return;
-                const reader = body.getReader();
-                const dec = new TextDecoder();
-                let buf = '';
-                (function pump() {
-                  reader.read().then(function (r) {
-                    if (r.done) return;
-                    try {
-                      buf += dec.decode(r.value, { stream: true });
-                      let i;
-                      while ((i = buf.indexOf(RS)) >= 0) {
-                        handleFrame(buf.slice(0, i));
-                        buf = buf.slice(i + 1);
-                      }
-                    } catch (e) {}
-                    pump();
-                  }).catch(function () {});
-                })();
-              } catch (e) {}
-            }).catch(function () {});
-          }
-        } catch (e) {}
-        return p;
-      };
-      try { Object.defineProperty(wrapped, '__pagerWrapped', { value: true }); } catch (e) {}
-      window.fetch = wrapped;
+  function worker(request) {
+    return new Promise((resolve) => {
+      const requestId = crypto.randomUUID();
+      requests.set(requestId, resolve);
+      window.postMessage({ __pagerRequest: true, requestId, request }, location.origin);
+      setTimeout(() => { if (requests.delete(requestId)) resolve({ ok: false }); }, 10000);
+    });
+  }
+  adapter.install({ emit, worker });
+  window.addEventListener('message', (message) => {
+    if (message.source !== window || message.origin !== location.origin || message.data?.__pagerControl !== true) return;
+    const data = message.data;
+    if (data.control === 'ack' && data.eventId) {
+      for (const [key, item] of pending) {
+        if (item.event.eventId !== data.eventId) continue;
+        if (data.ack?.ok && data.ack.eventId === data.eventId) pending.delete(key);
+        item.done?.(!!data.ack?.ok);
+        break;
+      }
     }
-  } catch (e) {}
+    if (data.control === 'response' && requests.has(data.requestId)) {
+      requests.get(data.requestId)(data.response);
+      requests.delete(data.requestId);
+    }
+    if (data.control === 'config' && typeof data.config?.captureOutlook === 'boolean') adapter.setEnabled(data.config.captureOutlook);
+    if (data.control === 'poll') adapter.poll();
+    if (data.control === 'reimport') adapter.reimport();
+  });
 
-  emit({ source: '__diag', title: 'pager extension capture installed', body: 'host=' + location.host });
+  function handleFrame(frame) {
+    let text = frame.trim();
+    if (text.startsWith('data:')) text = text.slice(5).trim();
+    let object;
+    try { object = JSON.parse(text); } catch { return; }
+    if (object?.type !== 1 || object.target !== 'syncMessage' || !Array.isArray(object.arguments?.[0])) return;
+    for (const item of object.arguments[0]) {
+      const conversation = item?.Conversation;
+      if (!conversation) continue;
+      if (!adapter.hasAccount()) {
+        if (unattributed.length < 500) unattributed.push(conversation);
+      } else adapter.conversation(conversation);
+    }
+  }
+  function drainUnattributed() {
+    if (!adapter.hasAccount()) return;
+    for (const item of unattributed.splice(0)) adapter.conversation(item);
+  }
+  const originalFetch = window.fetch;
+  if (!originalFetch || originalFetch.__pagerWrapped) return;
+  const wrapped = function (input, init) {
+    let url;
+    try { url = new URL(typeof input === 'string' ? input : input?.url || '', location.origin); } catch {}
+    try { adapter.observe(input, init, originalFetch); drainUnattributed(); } catch {}
+    const response = originalFetch.apply(this, arguments);
+    if (url?.origin === location.origin && url.pathname.includes('/owa/notificationchannel') && !url.pathname.includes('negotiate')) {
+      response.then((value) => {
+        const reader = value.clone().body?.getReader();
+        if (!reader) return;
+        const decoder = new TextDecoder();
+        let buffered = '';
+        const pump = () => reader.read().then(({ done, value: chunk }) => {
+          if (done) return;
+          buffered += decoder.decode(chunk, { stream: true });
+          let end;
+          while ((end = buffered.indexOf(RS)) !== -1) {
+            handleFrame(buffered.slice(0, end));
+            buffered = buffered.slice(end + 1);
+          }
+          pump();
+        }).catch(() => {});
+        pump();
+      }).catch(() => {});
+    }
+    return response;
+  };
+  Object.defineProperty(wrapped, '__pagerWrapped', { value: true });
+  window.fetch = wrapped;
 })();
