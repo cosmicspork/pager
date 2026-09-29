@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0](https://github.com/cosmicspork/pager/compare/v0.6.2...v0.7.0) (2026-09-29)
+
+
+### Features
+
+* archive communications before paging ([5955bea](https://github.com/cosmicspork/pager/commit/5955bea28df26b50aef579d2284589d0e98d4a96))
+* archive communications before paging ([dce2fae](https://github.com/cosmicspork/pager/commit/dce2fae03eef3f31324c6975e0f9c6b7f7c54bd5))
+* capture diagnostics and reliable Outlook folder sweeps ([2df9254](https://github.com/cosmicspork/pager/commit/2df92540353aebaf7c6dfee035e28f3d72095f5a))
+* report redacted capture diagnostics to the collector ([00e3425](https://github.com/cosmicspork/pager/commit/00e34256f7d18ba08244eb8cea3dd5be8c362d40))
+* sweep the Outlook Archive folder within retention ([bafab7e](https://github.com/cosmicspork/pager/commit/bafab7e5325e316656766bc1d1b1ce90123ed94c))
+
+
+### Bug Fixes
+
+* keep Outlook sweeps running across OWA auth refreshes ([8b34e8a](https://github.com/cosmicspork/pager/commit/8b34e8ac0a73b08f47683d8a9f524a9065f8efd0))
+* list Outlook folders with IdOnly and back off failed sweeps ([c9df757](https://github.com/cosmicspork/pager/commit/c9df7576b7705381c72c22ebc391b727d42dc460))
+
 ## [0.6.2](https://github.com/cosmicspork/pager/compare/v0.6.1...v0.6.2) (2026-08-31)
 
 
