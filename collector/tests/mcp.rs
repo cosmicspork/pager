@@ -38,6 +38,7 @@ async fn readers_see_commits_without_restart_and_cannot_write() {
         [
             "get_collection_status",
             "get_message",
+            "get_source_diagnostics",
             "get_thread",
             "search_messages"
         ]

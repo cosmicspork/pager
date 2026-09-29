@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod ingest;
 pub mod mcp;
 pub mod model;

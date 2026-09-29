@@ -21,7 +21,7 @@
   <div class="row">
     <label for="captureOutlook">
       <span class="name">Outlook capture</span>
-      <span class="hint">Read retained Inbox and Sent bodies through your signed-in tab, plus observed threads.</span>
+      <span class="hint">Read retained Inbox, Sent and Archive bodies through your signed-in tab, plus observed threads.</span>
     </label>
     <input type="checkbox" id="captureOutlook" />
   </div>
@@ -128,6 +128,32 @@
   <span class="hint" id="reimportStatus"></span>
 
   <p class="hint">After restoring an older archive.sqlite3 backup with the same archive ID, use Re-import from sources. Only still-available messages can be re-imported.</p>
+
+  <h2>Diagnostics</h2>
+  <p class="hint">
+    Recent source requests, response codes, counts and scan errors. Entries hold
+    no headers, tokens, subjects, bodies or addresses, so they are safe to share.
+    They are also sent to the collector, where agents read them with the
+    get_source_diagnostics MCP tool.
+  </p>
+  <div class="row">
+    <label for="debugProbe">
+      <span class="name">Console debug probe</span>
+      <span class="hint">
+        Adds <code>__pagerDebug</code> to open Outlook tabs: <code>probe(action, body)</code>
+        replays read-only requests with the tab's own sign-in and returns only a summary,
+        and <code>diagnostics()</code> lists this log. Leave off when not debugging.
+      </span>
+    </label>
+    <input type="checkbox" id="debugProbe" />
+  </div>
+  <div class="diag-actions">
+    <button type="button" id="diagRefresh">Refresh</button>
+    <button type="button" id="diagCopy">Copy diagnostics</button>
+    <button type="button" id="diagClear">Clear</button>
+    <span class="hint" id="diagStatus"></span>
+  </div>
+  <div id="diagList" class="diag-list"></div>
 
   <div class="footer">
     <button id="reset">Restore defaults</button>

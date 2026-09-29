@@ -14,6 +14,7 @@ use axum::{
 };
 use clap::{Parser, Subcommand};
 use pager_collector::{
+    diagnostics::{self, DiagnosticBatch, DiagnosticsLog},
     ingest::{bridge_url, forward_pages, now_ms},
     model::CaptureBatch,
     store::{ensure_token, Archive},
@@ -22,6 +23,7 @@ use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
 const MAX_BATCH: usize = 4 * 1024 * 1024;
+const MAX_DIAGNOSTICS: usize = 512 * 1024;
 
 #[derive(Parser)]
 #[command(name = "pager-collector")]
@@ -45,6 +47,7 @@ enum Command {
 
 struct App {
     archive: Arc<Archive>,
+    diagnostics: Arc<DiagnosticsLog>,
     token: String,
 }
 
@@ -64,11 +67,7 @@ async fn health(State(app): State<Arc<App>>) -> Json<Value> {
     Json(json!({"ok":true,"archiveId":app.archive.archive_id(),"schemaVersion":1}))
 }
 
-async fn capture(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Result<Json<Value>, HttpError> {
+fn authorize(app: &App, headers: &HeaderMap) -> Result<(), HttpError> {
     let provided = headers
         .get(AUTHORIZATION)
         .and_then(|header| header.to_str().ok())
@@ -79,6 +78,63 @@ async fn capture(
     {
         return Err(error(StatusCode::UNAUTHORIZED, "unauthorized", None));
     }
+    Ok(())
+}
+
+async fn report_diagnostics(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, HttpError> {
+    authorize(&app, &headers)?;
+    if body.len() > MAX_DIAGNOSTICS {
+        return Err(error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "diagnostics_too_large",
+            None,
+        ));
+    }
+    let batch: DiagnosticBatch = serde_json::from_slice(&body).map_err(|_| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_diagnostics",
+            Some("diagnostics JSON shape"),
+        )
+    })?;
+    diagnostics::validate(&batch).map_err(|_| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_diagnostics",
+            Some("entries"),
+        )
+    })?;
+    let log = app.diagnostics.clone();
+    let now = now_ms();
+    let stored = tokio::task::spawn_blocking(move || log.append(&batch, now))
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "diagnostics_unavailable",
+                None,
+            )
+        })?
+        .map_err(|_| {
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "diagnostics_unavailable",
+                None,
+            )
+        })?;
+    Ok(Json(json!({ "stored": stored })))
+}
+
+async fn capture(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, HttpError> {
+    authorize(&app, &headers)?;
     if body.len() > MAX_BATCH {
         return Err(error(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -156,7 +212,13 @@ async fn main() -> Result<()> {
                 dir.join("ingest-token").display()
             );
         }
-        Command::Mcp => pager_collector::mcp::run_mcp(dir.join("archive.sqlite3")).await?,
+        Command::Mcp => {
+            pager_collector::mcp::run_mcp(
+                dir.join("archive.sqlite3"),
+                dir.join(diagnostics::FILE_NAME),
+            )
+            .await?
+        }
         Command::Prune => {
             let archive = Archive::init(&dir)?;
             let counts = archive.prune(now_ms())?;
@@ -173,11 +235,13 @@ async fn main() -> Result<()> {
             let token = ensure_token(&dir)?;
             let app = Arc::new(App {
                 archive: archive.clone(),
+                diagnostics: Arc::new(DiagnosticsLog::open(&dir)?),
                 token,
             });
             let router = Router::new()
                 .route("/health", get(health))
                 .route("/capture", post(capture))
+                .route("/diagnostics", post(report_diagnostics))
                 .layer(DefaultBodyLimit::max(MAX_BATCH))
                 .with_state(app);
             let socket = tokio::net::TcpListener::bind(listen)

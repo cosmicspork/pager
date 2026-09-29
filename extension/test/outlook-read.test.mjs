@@ -8,8 +8,10 @@ const wrapperCode = await readFile(new URL('../main-capture.js', import.meta.url
 const clockStart = Date.now();
 const dateString = new Date(clockStart).toISOString();
 
-async function fixture({ failFirst = false, failThreadFirst = false, secondMailbox = false, preAuthFrame = false, stalled = false, throttle = false } = {}) {
+async function fixture({ failFirst = false, failThreadFirst = false, secondMailbox = false, preAuthFrame = false, stalled = false, throttle = false, sentError = false, oldSent = false, refreshDuringSweep = false } = {}) {
+  let refreshes = 0;
   const events = [];
+  const diags = [];
   const requests = [];
   const ledgers = new Map();
   const listeners = [];
@@ -42,12 +44,22 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
     if (action === 'FindItem') {
       const folder = requests.at(-1).body.Body.ParentFolderIds[0].Id;
       const offset = requests.at(-1).body.Body.Paging.Offset;
+      if (oldSent && folder === 'sentitems') {
+        const old = new Date(clockStart - 2 * 365 * 24 * 60 * 60 * 1000).toISOString();
+        return success({ RootFolder: { Items: [{ ...item('old-' + offset), DateTimeSent: old, DateTimeReceived: old }],
+          IndexedPagingOffset: offset + 1, IncludesLastItemInRange: false } });
+      }
+      if (sentError && folder === 'sentitems') {
+        return Response.json({ Body: { ResponseMessages: { Items: [{ ResponseClass: 'Error', ResponseCode: 'ErrorInternalServerError',
+          MessageText: 'An internal server error occurred. The operation failed., Index was outside the bounds of the array.', RootFolder: null }] } } });
+      }
       const rows = folder === 'inbox' ? [item('mail-1'), item('mail-2')] : [item('mail-1')];
       return success({ RootFolder: { Items: offset === 0 ? [rows[0]] : rows.slice(1), IndexedPagingOffset: stalled ? offset : offset + 1,
         IncludesLastItemInRange: folder === 'sentitems' || offset !== 0 } });
     }
     if (action === 'GetItem') {
       const id = requests.at(-1).body.Body.ItemIds[0].Id;
+
       if ((failFirst && id === 'mail-2' || failThreadFirst && id === 'thread-only') && getFailures++ === 0) return Response.json({}, { status: 500 });
       return success({ Items: [{ ...item(id), Body: { BodyType: 'Text', Value: id === 'mail-2' ? 'Retry succeeded' : 'Tangerine message body', IsTruncated: false } }] });
     }
@@ -59,6 +71,7 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
     throw new Error('unexpected action');
   };
   const window = { fetch: nativeFetch, addEventListener(_, fn) { listeners.push(fn); }, postMessage(data) {
+    if (data.__pagerDiag) diags.push(data.entry);
     if (data.__pagerEvent) {
       events.push(data.ev);
       queueMicrotask(() => listeners.forEach((fn) => fn({ source: window, origin: 'https://outlook.office.com', data: {
@@ -78,7 +91,15 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
     TextDecoder, TextEncoder, JSON, Math, Map, Set, Promise, Number, String, Array, Object, Boolean,
     location: { host: 'outlook.office.com', origin: 'https://outlook.office.com', pathname: '/mail/' },
     crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++nextUuid).padStart(12, '0')}` },
-    setTimeout(fn, ms) { if (ms < 5000) queueMicrotask(fn); return 0; },
+    setTimeout(fn, ms) {
+      // The adapter's one-second pacing wait is where OWA's own requests land.
+      if (refreshDuringSweep && ms >= 500 && ms < 5000) {
+        window.fetch('https://outlook.office.com/owa/service.svc?action=GetItem', { method: 'POST',
+          headers: { authorization: 'Bearer refreshed-' + refreshes++, 'x-anchormailbox': 'owner@example.invalid', 'x-tenantid': 'tenant' }, body: '{}' });
+      }
+      if (ms < 5000) queueMicrotask(fn);
+      return 0;
+    },
     setInterval() {}, console,
   };
   vm.createContext(sandbox);
@@ -92,7 +113,8 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
   if (secondMailbox) await auth('other@example.invalid');
   const settle = async () => { for (let n = 0; n < 100; n++) await new Promise((resolve) => setImmediate(resolve)); };
   await settle();
-  return { events, requests, ledgers, window, settle, advance(ms) { current += ms; }, adapter: window.__pagerOutlookRead };
+  const control = (message) => listeners.forEach((fn) => fn({ source: window, origin: 'https://outlook.office.com', data: { __pagerControl: true, ...message } }));
+  return { events, diags, requests, ledgers, window, settle, control, advance(ms) { current += ms; }, adapter: window.__pagerOutlookRead };
 }
 
 test('enumerates Inbox and Sent with read actions, archives full bodies and sent provenance', async () => {
@@ -147,4 +169,94 @@ test('stalled pagination and throttling never report complete coverage', async (
     assert.ok(statuses.some((event) => event.status.state === 'degraded'));
     assert.equal(statuses.at(-1).status.initialSyncComplete, false);
   }
+});
+
+test('source response errors name the action, folder and Exchange code without leaking content', async () => {
+  const cap = await fixture({ sentError: true });
+  const statuses = cap.events.filter((event) => event.kind === 'status');
+  assert.equal(statuses.at(-1).status.reason, 'source_response_error: FindItem/sentitems ErrorInternalServerError');
+  const failure = cap.diags.find((entry) => entry.op === 'FindItem' && entry.outcome === 'error');
+  assert.equal(failure.code, 'ErrorInternalServerError');
+  assert.match(failure.message, /Index was outside the bounds/);
+  assert.deepEqual([failure.detail.folder, failure.detail.shape, failure.detail.offset, failure.detail.max, failure.detail.http],
+    ['sentitems', 'IdOnly', 0, 50, 200]);
+  assert.ok(cap.diags.some((entry) => entry.op === 'sweep' && entry.detail.folder === 'inbox' && entry.detail.listed === 2));
+  assert.ok(cap.diags.some((entry) => entry.op === 'poll' && entry.outcome === 'error'));
+  assert.ok(!cap.diags.some((entry) => entry.op === 'GetItem' && entry.outcome === 'ok'), 'successful GetItem is not logged');
+  const serialized = JSON.stringify(cap.diags);
+  for (const secret of ['fixture-secret', 'session-secret', 'Synthetic subject', 'Tangerine', 'sender@example.invalid']) {
+    assert.ok(!serialized.includes(secret), secret + ' must not appear in diagnostics');
+  }
+});
+
+test('debug probe exists only while enabled and returns summaries of read actions', async () => {
+  const cap = await fixture();
+  assert.equal(cap.window.__pagerDebug, undefined);
+  await assert.rejects(cap.adapter.probe('FindItem', {}), /disabled/);
+  cap.control({ control: 'config', config: { debugProbe: true } });
+  const body = { ParentFolderIds: [{ Id: 'inbox' }], ItemShape: { BaseShape: 'IdOnly' }, Paging: { Offset: 0, MaxEntriesReturned: 5 } };
+  const result = await cap.window.__pagerDebug.probe('FindItem', body);
+  assert.equal(result.ok, true);
+  assert.equal(result.code, 'NoError');
+  assert.equal(result.folder, 'inbox');
+  assert.deepEqual(Object.keys(result.items[0]).sort(), ['hasBody', 'id', 'itemClass', 'received', 'sent']);
+  assert.ok(!JSON.stringify(result).includes('Synthetic subject') && !JSON.stringify(result).includes('fixture-secret'));
+  await assert.rejects(cap.window.__pagerDebug.probe('SendItem', {}), /invalid_action/);
+  cap.control({ control: 'config', config: { debugProbe: false } });
+  assert.equal(cap.window.__pagerDebug, undefined);
+  await assert.rejects(cap.adapter.probe('FindItem', body), /disabled/);
+});
+
+test('listing asks Exchange for ids and the fields retrieve reads, not AllProperties', async () => {
+  const cap = await fixture();
+  const find = cap.requests.find((request) => request.action === 'FindItem').body.Body;
+  assert.equal(find.ItemShape.BaseShape, 'IdOnly');
+  const fields = find.ItemShape.AdditionalProperties.map((property) => property.FieldURI);
+  for (const field of ['DateTimeSent', 'DateTimeReceived', 'IsDraft', 'ConversationId', 'Subject']) assert.ok(fields.includes(field), field);
+  assert.ok(!fields.includes('LastModifiedTime'), 'OWA rejects LastModifiedTime with HTTP 400');
+  assert.equal(find.FocusedViewFilter, undefined);
+});
+
+test('a failed sweep backs off instead of re-listing on every OWA request', async () => {
+  const cap = await fixture({ sentError: true });
+  const sentLists = () => cap.requests.filter((request) => request.action === 'FindItem' &&
+    request.body.Body.ParentFolderIds[0].Id === 'sentitems').length;
+  assert.equal(sentLists(), 1);
+  for (let n = 0; n < 5; n++) {
+    await cap.window.fetch('https://outlook.office.com/owa/service.svc?action=GetItem', { method: 'POST',
+      headers: { authorization: 'Bearer fixture-secret', 'x-anchormailbox': 'owner@example.invalid', 'x-tenantid': 'tenant' }, body: '{}' });
+    await cap.adapter.poll();
+    await cap.settle();
+  }
+  assert.equal(sentLists(), 1, 'no retry inside the backoff window');
+  assert.equal(cap.events.filter((event) => event.kind === 'status').at(-1).status.state, 'degraded', 'backoff never reports ok');
+  cap.advance(61 * 1000);
+  await cap.adapter.poll();
+  await cap.settle();
+  assert.equal(sentLists(), 2);
+  cap.advance(61 * 1000);
+  await cap.adapter.poll();
+  await cap.settle();
+  assert.equal(sentLists(), 2, 'second failure doubles the wait');
+  const failure = cap.diags.filter((entry) => entry.op === 'poll').at(-1);
+  assert.equal(failure.detail.failures, 2);
+  assert.equal(failure.detail.retryInSec, 120);
+});
+
+test('sweep stops paging once a whole page is past retention', async () => {
+  const cap = await fixture({ oldSent: true });
+  const sentLists = cap.requests.filter((request) => request.action === 'FindItem' &&
+    request.body.Body.ParentFolderIds[0].Id === 'sentitems');
+  assert.equal(sentLists.length, 1);
+  assert.ok(cap.events.some((event) => event.kind === 'status' && event.status.initialSyncComplete));
+  assert.ok(!cap.requests.some((request) => request.action === 'GetItem' && request.body.Body.ItemIds[0].Id.startsWith('old-')));
+});
+
+test('OWA requests during a sweep refresh auth without restarting it', async () => {
+  const cap = await fixture({ refreshDuringSweep: true });
+  const lists = cap.requests.filter((request) => request.action === 'FindItem');
+  assert.deepEqual(lists.map((request) => request.body.Body.ParentFolderIds[0].Id), ['inbox', 'inbox', 'sentitems', 'archive', 'archive']);
+  assert.ok(!cap.diags.some((entry) => entry.code === 'waiting_for_auth'));
+  assert.ok(cap.events.some((event) => event.kind === 'status' && event.status.initialSyncComplete));
+  assert.match(cap.requests.at(-1).headers.authorization, /^Bearer refreshed-/, 'uses the newest template');
 });

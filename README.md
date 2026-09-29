@@ -181,17 +181,24 @@ notifications for your *own* messages — test with a message from someone else.
 ## Querying the local archive
 
 Run `pager-collector mcp` as a local **stdio** MCP subprocess with access to
-the same archive directory (or set `PAGER_COLLECTOR_DIR`). It exposes four
-read-only tools: `search_messages`, `get_thread`, `get_message` and
-`get_collection_status`. The MCP process opens the live SQLite WAL read-only;
+the same archive directory (or set `PAGER_COLLECTOR_DIR`). It exposes five
+read-only tools: `search_messages`, `get_thread`, `get_message`,
+`get_collection_status` and `get_source_diagnostics`. The MCP process opens the live SQLite WAL read-only;
 it cannot create/migrate/prune a missing database. Install it only for agents
 you trust with private communications; MCP read-only tools do not restrict a
 full filesystem-capable, unsandboxed agent. Do not expose the archive, token or
 MCP process through a hosted service.
 
+`get_source_diagnostics` lists recent capture operations reported by the
+extension to the collector's authenticated `/diagnostics` endpoint: source
+request, response code and message, counts, paging, timing and scan errors. It
+holds no headers, tokens, subjects, bodies or addresses. Entries live in a
+separate `diagnostics.sqlite3` next to the archive, kept for 7 days and at most
+5000 rows.
+
 Search/collection status report source coverage, import progress and stale
 heartbeats. Teams includes available cached messages, **not** complete Teams
-history. Outlook retrieves retained personal Inbox and Sent Items through
+history. Outlook retrieves retained personal Inbox, Sent Items and Archive through
 authenticated read actions in the open browser tab, plus thread context
 observed there; it does not import other folders/shared mailboxes or attachments.
 Bodies may be missing, truncated or deleted at the source. MCP responses bound

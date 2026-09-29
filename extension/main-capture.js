@@ -34,7 +34,24 @@
       setTimeout(() => { if (requests.delete(requestId)) resolve({ ok: false }); }, 10000);
     });
   }
-  adapter.install({ emit, worker });
+  function diag(entry) {
+    window.postMessage({ __pagerDiag: true, source: 'outlook', entry }, location.origin);
+  }
+  adapter.install({ emit, worker, diag });
+  // Console surface for debugging capture; only present while enabled in settings.
+  const debugApi = Object.freeze({
+    probe: (action, body) => adapter.probe(action, body),
+    diagnostics: async (limit = 50) => {
+      const response = await worker({ type: 'pager-diag-list', source: 'outlook', limit });
+      if (!response?.ok) throw new Error(response?.error || 'diagnostics unavailable');
+      return response.entries;
+    },
+  });
+  function setDebug(enabled) {
+    adapter.setProbeEnabled(enabled);
+    if (enabled) Object.defineProperty(window, '__pagerDebug', { value: debugApi, configurable: true });
+    else delete window.__pagerDebug;
+  }
   window.addEventListener('message', (message) => {
     if (message.source !== window || message.origin !== location.origin || message.data?.__pagerControl !== true) return;
     const data = message.data;
@@ -51,6 +68,7 @@
       requests.delete(data.requestId);
     }
     if (data.control === 'config' && typeof data.config?.captureOutlook === 'boolean') adapter.setEnabled(data.config.captureOutlook);
+    if (data.control === 'config' && typeof data.config?.debugProbe === 'boolean') setDebug(data.config.debugProbe);
     if (data.control === 'poll') adapter.poll();
     if (data.control === 'reimport') adapter.reimport();
   });

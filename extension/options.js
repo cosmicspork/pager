@@ -4,7 +4,7 @@ import {
   isValidBridgeUrl, isValidCollectorUrl, validWindows,
 } from './settings.js';
 
-const BOOLS = ['captureTeams', 'captureOutlook', 'keepActiveMask', 'teamsMuteSelf'];
+const BOOLS = ['captureTeams', 'captureOutlook', 'keepActiveMask', 'teamsMuteSelf', 'debugProbe'];
 const MODES = ['teamsChatsMode', 'teamsChannelsMode', 'teamsMeetingsMode'];
 const WINDOWS = [
   { key: 'pagingSilenceWindows', add: 'addPagingWindow', error: 'pagingScheduleError' },
@@ -73,13 +73,73 @@ async function render() {
 for (const key of BOOLS) {
   document.getElementById(key).addEventListener('change', async (event) => {
     await setSettings({ [key]: event.target.checked });
-    flash(); await render();
+    flash(); await function describe(entry) {
+  const time = new Date(entry.at).toLocaleTimeString();
+  const facts = Object.entries(entry.detail || {}).map(([key, value]) => `${key}=${value}`).join(' ');
+  return [time, entry.source, entry.op, entry.outcome, entry.code, entry.durationMs != null ? entry.durationMs + 'ms' : null,
+    facts, entry.message ? '— ' + entry.message : null].filter(Boolean).join(' · ');
+}
+let diagEntries = [];
+async function renderDiagnostics() {
+  const response = await chrome.runtime.sendMessage({ type: 'pager-diag-list', limit: 200 });
+  diagEntries = response?.ok ? response.entries : [];
+  const list = document.getElementById('diagList');
+  list.replaceChildren(...diagEntries.map((entry) => {
+    const row = document.createElement('div');
+    row.className = 'diag-row' + (entry.outcome === 'error' ? ' error' : '');
+    row.textContent = describe(entry);
+    return row;
+  }));
+  document.getElementById('diagStatus').textContent = response?.ok ? `${diagEntries.length} recent entries` : 'Diagnostics unavailable.';
+}
+document.getElementById('diagRefresh').addEventListener('click', renderDiagnostics);
+document.getElementById('diagCopy').addEventListener('click', async () => {
+  await renderDiagnostics();
+  await navigator.clipboard.writeText(JSON.stringify(diagEntries, null, 2));
+  document.getElementById('diagStatus').textContent = `Copied ${diagEntries.length} entries.`;
+});
+document.getElementById('diagClear').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'pager-diag-clear' });
+  await renderDiagnostics();
+});
+render();
+renderDiagnostics();
   });
 }
 for (const key of MODES) {
   document.getElementById(key).addEventListener('change', async (event) => {
     await setSettings({ [key]: event.target.value });
-    flash(); await render();
+    flash(); await function describe(entry) {
+  const time = new Date(entry.at).toLocaleTimeString();
+  const facts = Object.entries(entry.detail || {}).map(([key, value]) => `${key}=${value}`).join(' ');
+  return [time, entry.source, entry.op, entry.outcome, entry.code, entry.durationMs != null ? entry.durationMs + 'ms' : null,
+    facts, entry.message ? '— ' + entry.message : null].filter(Boolean).join(' · ');
+}
+let diagEntries = [];
+async function renderDiagnostics() {
+  const response = await chrome.runtime.sendMessage({ type: 'pager-diag-list', limit: 200 });
+  diagEntries = response?.ok ? response.entries : [];
+  const list = document.getElementById('diagList');
+  list.replaceChildren(...diagEntries.map((entry) => {
+    const row = document.createElement('div');
+    row.className = 'diag-row' + (entry.outcome === 'error' ? ' error' : '');
+    row.textContent = describe(entry);
+    return row;
+  }));
+  document.getElementById('diagStatus').textContent = response?.ok ? `${diagEntries.length} recent entries` : 'Diagnostics unavailable.';
+}
+document.getElementById('diagRefresh').addEventListener('click', renderDiagnostics);
+document.getElementById('diagCopy').addEventListener('click', async () => {
+  await renderDiagnostics();
+  await navigator.clipboard.writeText(JSON.stringify(diagEntries, null, 2));
+  document.getElementById('diagStatus').textContent = `Copied ${diagEntries.length} entries.`;
+});
+document.getElementById('diagClear').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'pager-diag-clear' });
+  await renderDiagnostics();
+});
+render();
+renderDiagnostics();
   });
 }
 for (const { key, add } of WINDOWS) {
@@ -89,7 +149,37 @@ for (const { key, add } of WINDOWS) {
 }
 document.getElementById('keepActiveIntervalSec').addEventListener('change', async (event) => {
   const value = Number(event.target.value);
-  if (!Number.isFinite(value)) return render();
+  if (!Number.isFinite(value)) return function describe(entry) {
+  const time = new Date(entry.at).toLocaleTimeString();
+  const facts = Object.entries(entry.detail || {}).map(([key, value]) => `${key}=${value}`).join(' ');
+  return [time, entry.source, entry.op, entry.outcome, entry.code, entry.durationMs != null ? entry.durationMs + 'ms' : null,
+    facts, entry.message ? '— ' + entry.message : null].filter(Boolean).join(' · ');
+}
+let diagEntries = [];
+async function renderDiagnostics() {
+  const response = await chrome.runtime.sendMessage({ type: 'pager-diag-list', limit: 200 });
+  diagEntries = response?.ok ? response.entries : [];
+  const list = document.getElementById('diagList');
+  list.replaceChildren(...diagEntries.map((entry) => {
+    const row = document.createElement('div');
+    row.className = 'diag-row' + (entry.outcome === 'error' ? ' error' : '');
+    row.textContent = describe(entry);
+    return row;
+  }));
+  document.getElementById('diagStatus').textContent = response?.ok ? `${diagEntries.length} recent entries` : 'Diagnostics unavailable.';
+}
+document.getElementById('diagRefresh').addEventListener('click', renderDiagnostics);
+document.getElementById('diagCopy').addEventListener('click', async () => {
+  await renderDiagnostics();
+  await navigator.clipboard.writeText(JSON.stringify(diagEntries, null, 2));
+  document.getElementById('diagStatus').textContent = `Copied ${diagEntries.length} entries.`;
+});
+document.getElementById('diagClear').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'pager-diag-clear' });
+  await renderDiagnostics();
+});
+render();
+renderDiagnostics();
   const clamped = Math.min(INTERVAL_MAX_SEC, Math.max(INTERVAL_MIN_SEC, Math.round(value)));
   await setSettings({ keepActiveIntervalSec: clamped });
   event.target.value = clamped;
@@ -116,6 +206,66 @@ document.getElementById('reimport').addEventListener('click', async () => {
 });
 document.getElementById('reset').addEventListener('click', async () => {
   await setSettings(DEFAULTS);
-  flash(); await render();
+  flash(); await function describe(entry) {
+  const time = new Date(entry.at).toLocaleTimeString();
+  const facts = Object.entries(entry.detail || {}).map(([key, value]) => `${key}=${value}`).join(' ');
+  return [time, entry.source, entry.op, entry.outcome, entry.code, entry.durationMs != null ? entry.durationMs + 'ms' : null,
+    facts, entry.message ? '— ' + entry.message : null].filter(Boolean).join(' · ');
+}
+let diagEntries = [];
+async function renderDiagnostics() {
+  const response = await chrome.runtime.sendMessage({ type: 'pager-diag-list', limit: 200 });
+  diagEntries = response?.ok ? response.entries : [];
+  const list = document.getElementById('diagList');
+  list.replaceChildren(...diagEntries.map((entry) => {
+    const row = document.createElement('div');
+    row.className = 'diag-row' + (entry.outcome === 'error' ? ' error' : '');
+    row.textContent = describe(entry);
+    return row;
+  }));
+  document.getElementById('diagStatus').textContent = response?.ok ? `${diagEntries.length} recent entries` : 'Diagnostics unavailable.';
+}
+document.getElementById('diagRefresh').addEventListener('click', renderDiagnostics);
+document.getElementById('diagCopy').addEventListener('click', async () => {
+  await renderDiagnostics();
+  await navigator.clipboard.writeText(JSON.stringify(diagEntries, null, 2));
+  document.getElementById('diagStatus').textContent = `Copied ${diagEntries.length} entries.`;
+});
+document.getElementById('diagClear').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'pager-diag-clear' });
+  await renderDiagnostics();
 });
 render();
+renderDiagnostics();
+});
+function describe(entry) {
+  const time = new Date(entry.at).toLocaleTimeString();
+  const facts = Object.entries(entry.detail || {}).map(([key, value]) => `${key}=${value}`).join(' ');
+  return [time, entry.source, entry.op, entry.outcome, entry.code, entry.durationMs != null ? entry.durationMs + 'ms' : null,
+    facts, entry.message ? '— ' + entry.message : null].filter(Boolean).join(' · ');
+}
+let diagEntries = [];
+async function renderDiagnostics() {
+  const response = await chrome.runtime.sendMessage({ type: 'pager-diag-list', limit: 200 });
+  diagEntries = response?.ok ? response.entries : [];
+  const list = document.getElementById('diagList');
+  list.replaceChildren(...diagEntries.map((entry) => {
+    const row = document.createElement('div');
+    row.className = 'diag-row' + (entry.outcome === 'error' ? ' error' : '');
+    row.textContent = describe(entry);
+    return row;
+  }));
+  document.getElementById('diagStatus').textContent = response?.ok ? `${diagEntries.length} recent entries` : 'Diagnostics unavailable.';
+}
+document.getElementById('diagRefresh').addEventListener('click', renderDiagnostics);
+document.getElementById('diagCopy').addEventListener('click', async () => {
+  await renderDiagnostics();
+  await navigator.clipboard.writeText(JSON.stringify(diagEntries, null, 2));
+  document.getElementById('diagStatus').textContent = `Copied ${diagEntries.length} entries.`;
+});
+document.getElementById('diagClear').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'pager-diag-clear' });
+  await renderDiagnostics();
+});
+render();
+renderDiagnostics();

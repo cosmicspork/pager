@@ -5,7 +5,7 @@
   const HEADERS = ['authorization', 'x-anchormailbox', 'x-tenantid', 'x-owa-sessionid', 'x-clientid',
     'x-client-version', 'owaappid', 'x-ms-appname', 'x-routingparameter-sessionkey', 'prefer'];
   const ACTIONS = new Set(['FindItem', 'GetItem', 'GetConversationItems']);
-  const folders = ['inbox', 'sentitems'];
+  const folders = ['inbox', 'sentitems', 'archive'];
   const templates = new Map();
   const anchors = new Set();
   const pendingThreads = new Map();
@@ -15,6 +15,8 @@
   let failedLoaded = false;
   let emit;
   let worker;
+  let diag;
+  let probeEnabled = false;
   let active = false;
   let captureEnabled = true;
   let authAccount = null;
@@ -22,6 +24,8 @@
   let nextStart = 0;
   let pauseUntil = 0;
   let lastSweep = 0;
+  let sweepFailures = 0;
+  let sweepRetryAt = 0;
   let lastStatus = 0;
   let initialComplete = false;
   let reason = null;
@@ -79,22 +83,102 @@
       status: { state, reason: nextReason, coverage: 'outlook_inbox_sent_and_observed_threads',
         initialSyncComplete: initialComplete, oldestSourceTime: oldest, pending: pendingThreads.size } });
   }
-  async function readRequest(action, body) {
-    if (!captureEnabled) throw new Error('source_disabled');
-    if (!ACTIONS.has(action)) throw new Error('invalid_action');
-    const template = templates.get(authAccount);
-    if (!template) throw new Error('waiting_for_auth');
+  const PROBE_ACTIONS = new Set([...ACTIONS, 'FindFolder', 'GetFolder', 'FindConversation']);
+  function requestDetail(action, body) {
+    const detail = { action };
+    const folder = body?.ParentFolderIds?.[0]?.Id;
+    if (typeof folder === 'string') detail.folder = folder.length > 40 ? 'id' : folder;
+    if (body?.ItemShape?.BaseShape) detail.shape = String(body.ItemShape.BaseShape);
+    if (Number.isFinite(body?.Paging?.Offset)) detail.offset = body.Paging.Offset;
+    if (Number.isFinite(body?.Paging?.MaxEntriesReturned)) detail.max = body.Paging.MaxEntriesReturned;
+    if (Number.isFinite(body?.MaxItemsToReturn)) detail.max = body.MaxItemsToReturn;
+    return detail;
+  }
+  function responseDetail(envelope) {
+    const detail = {};
+    const root = envelope?.RootFolder;
+    if (root) {
+      detail.returned = Array.isArray(root.Items) ? root.Items.length : null;
+      if (Number.isFinite(root.TotalItemsInView)) detail.total = root.TotalItemsInView;
+      if (typeof root.IncludesLastItemInRange === 'boolean') detail.includesLast = root.IncludesLastItemInRange;
+      if (Number.isFinite(Number(root.IndexedPagingOffset))) detail.nextOffset = Number(root.IndexedPagingOffset);
+    }
+    if (Array.isArray(envelope?.Items)) detail.returned = envelope.Items.length;
+    const conversation = envelope?.Conversation;
+    if (conversation) {
+      detail.returned = Array.isArray(conversation.ConversationNodes) ? conversation.ConversationNodes.length : null;
+      if (Number.isFinite(Number(conversation.TotalConversationNodesCount))) detail.total = Number(conversation.TotalConversationNodesCount);
+    }
+    return detail;
+  }
+  // Whether Exchange or OWA's own service worker answered. A worker-built
+  // response lacks Exchange's request-id header and moves no bytes.
+  function transportDetail(url, response) {
+    const detail = { http: response.status, exchangeHeaders: response.headers.has('request-id') };
+    try {
+      detail.swControlled = !!navigator.serviceWorker?.controller;
+      const timing = performance.getEntriesByName(url.href).at(-1);
+      if (timing) { detail.viaWorker = timing.workerStart > 0; detail.transferSize = timing.transferSize; }
+    } catch {}
+    return detail;
+  }
+  function note(outcome, action, detail, started, extra = {}) {
+    // One GetItem per message during import would flush everything else out of the log.
+    if (!diag || outcome === 'ok' && action === 'GetItem') return;
+    try {
+      diag({ accountId: authAccount, at: Date.now(), op: action, outcome, durationMs: Date.now() - started,
+        code: extra.code || null, message: extra.message || null, detail });
+    } catch {}
+  }
+  function failure(code, detail) {
+    const error = new Error(code);
+    error.detail = [detail.action, detail.folder].filter(Boolean).join('/');
+    return error;
+  }
+  async function exchange(action, body, allowed = ACTIONS) {
+    if (!allowed.has(action)) throw new Error('invalid_action');
+    const account = authAccount;
+    if (!templates.has(account)) throw new Error('waiting_for_auth');
     const wait = Math.max(nextStart, pauseUntil) - Date.now();
     if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    if (templates.get(authAccount) !== template) throw new Error('waiting_for_auth');
+    // OWA refreshes the template on each of its own requests; use the newest
+    // one for the same mailbox rather than abandoning the sweep.
+    const template = templates.get(account);
+    if (!template || authAccount !== account) throw new Error('waiting_for_auth');
     nextStart = Date.now() + 1000;
     const version = action === 'GetConversationItems' ? 'V2017_08_18' : 'V2018_01_18';
-    const response = await originalFetch.call(window, new URL(`/owa/service.svc?action=${action}&app=Mail&UA=0`, location.origin), {
-      method: 'POST', credentials: 'include',
-      headers: { ...template.headers, Action: action, 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ __type: `${action}JsonRequest:#Exchange`,
-        Header: { __type: 'JsonRequestHeaders:#Exchange', RequestServerVersion: version }, Body: body }),
-    });
+    const url = new URL(`/owa/service.svc?action=${action}&app=Mail&UA=0`, location.origin);
+    const detail = requestDetail(action, body);
+    const started = Date.now();
+    let response;
+    try {
+      response = await originalFetch.call(window, url, {
+        method: 'POST', credentials: 'include',
+        headers: { ...template.headers, Action: action, 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ __type: `${action}JsonRequest:#Exchange`,
+          Header: { __type: 'JsonRequestHeaders:#Exchange', RequestServerVersion: version }, Body: body }),
+      });
+    } catch (error) {
+      note('error', action, detail, started, { code: 'network_error', message: String(error?.message || error) });
+      throw error;
+    }
+    Object.assign(detail, transportDetail(url, response));
+    let envelope = null;
+    if (response.ok) {
+      const parsed = await response.json().catch(() => null);
+      envelope = parsed?.Body?.ResponseMessages?.Items?.[0] || null;
+      if (envelope) {
+        Object.assign(detail, responseDetail(envelope));
+        detail.responseClass = envelope.ResponseClass ?? null;
+      }
+    }
+    const code = !response.ok ? 'http_' + response.status : envelope ? envelope.ResponseCode ?? null : 'invalid_envelope';
+    const ok = response.ok && envelope?.ResponseClass === 'Success' && envelope.ResponseCode === 'NoError';
+    note(ok ? 'ok' : 'error', action, detail, started, ok ? {} : { code, message: envelope?.MessageText });
+    return { response, envelope, detail, ok, code };
+  }
+  async function readRequest(action, body) {
+    const { response, envelope, detail, ok, code } = await exchange(action, body);
     if (response.status === 401 || response.status === 403) {
       templates.delete(authAccount);
       await status('waiting_for_auth', 'auth_expired', true);
@@ -108,20 +192,39 @@
       await status('degraded', 'source_throttled', true);
       throw new Error('source_throttled');
     }
-    if (!response.ok) throw new Error('source_http_error');
-    const parsed = await response.json();
-    const envelope = parsed?.Body?.ResponseMessages?.Items?.[0];
-    if (!envelope || envelope.ResponseClass !== 'Success' || envelope.ResponseCode !== 'NoError') {
-      throw new Error('source_response_error');
+    if (!response.ok) throw failure('source_http_error', detail);
+    if (!ok) {
+      const error = failure('source_response_error', detail);
+      if (code) error.detail += ' ' + code;
+      throw error;
     }
     return envelope;
   }
+  function digest(item) {
+    return { id: item?.ItemId?.Id || null, itemClass: item?.ItemClass || null,
+      received: item?.DateTimeReceived || null, sent: item?.DateTimeSent || null, hasBody: !!item?.Body };
+  }
+  // Debug-only: lets a developer replay read requests with the tab's existing
+  // authentication while never handing headers or message content back.
+  async function probe(action, body) {
+    if (!probeEnabled) throw new Error('Pager debug probe is disabled in extension settings');
+    if (!authAccount || !templates.has(authAccount)) throw new Error('No authenticated Outlook request observed in this tab yet');
+    const { envelope, detail, ok, code } = await exchange(action, body, PROBE_ACTIONS);
+    const items = envelope?.RootFolder?.Items || envelope?.Items ||
+      envelope?.Conversation?.ConversationNodes?.flatMap((node) => node.Items || []) || [];
+    return { ok, code, message: envelope?.MessageText || null, ...detail, items: items.slice(0, 50).map(digest) };
+  }
+  // Exchange fails the whole FindItem page with ErrorInternalServerError when
+  // AllProperties hits certain Sent Items entries, so list only what retrieve()
+  // and its fallback record read; GetItem fetches each full item.
+  const LIST_PROPERTIES = ['DateTimeSent', 'DateTimeReceived', 'DateTimeCreated', 'IsDraft', 'ConversationId',
+    'Subject', 'From', 'Sender', 'HasAttachments', 'WebClientReadFormQueryString', 'ToRecipients', 'CcRecipients'];
   function findShape(folder, offset) {
     return { __type: 'FindItemRequest:#Exchange',
       ParentFolderIds: [{ __type: 'DistinguishedFolderId:#Exchange', Id: folder }],
-      ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'AllProperties' },
-      Traversal: 'Shallow', Paging: { __type: 'IndexedPageView:#Exchange', BasePoint: 'Beginning', Offset: offset, MaxEntriesReturned: 50 },
-      FocusedViewFilter: -1, ViewFilter: 'All' };
+      ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'IdOnly',
+        AdditionalProperties: LIST_PROPERTIES.map((field) => ({ __type: 'PropertyUri:#Exchange', FieldURI: field })) },
+      Traversal: 'Shallow', Paging: { __type: 'IndexedPageView:#Exchange', BasePoint: 'Beginning', Offset: offset, MaxEntriesReturned: 50 } };
   }
   function itemShape(id) {
     return { __type: 'GetItemRequest:#Exchange',
@@ -247,15 +350,28 @@
   async function sweep(folder) {
     const key = sourceKey('import', authAccount, folder);
     let offset = 0;
+    let pages = 0;
+    let listed = 0;
+    let total = null;
+    const started = Date.now();
     const failureCount = new Map();
     while (true) {
       const response = await readRequest('FindItem', findShape(folder, offset));
       const root = response.RootFolder;
       if (!root || !Array.isArray(root.Items) || typeof root.IncludesLastItemInRange !== 'boolean') throw new Error('invalid_find_shape');
+      pages++;
+      listed += root.Items.length;
+      if (Number.isFinite(root.TotalItemsInView)) total = root.TotalItemsInView;
       for (const item of root.Items) {
         if (pendingThreads.size) await drainThreads();
         await retrieve(item, folder === 'sentitems', failureCount);
       }
+      // Pages come newest first; once a whole page is past retention the rest is too.
+      const expired = root.Items.length > 0 && root.Items.every((item) => {
+        const time = itemTime(item, folder === 'sentitems');
+        return time !== null && time < cutoff();
+      });
+      if (expired) break;
       const next = Number(root.IndexedPagingOffset);
       if (!root.IncludesLastItemInRange && (!Number.isSafeInteger(next) || next <= offset)) throw new Error('pagination_stalled');
       offset = next;
@@ -263,6 +379,7 @@
       if (!saved?.ok) throw new Error('sync_write_failed');
       if (root.IncludesLastItemInRange) break;
     }
+    note('ok', 'sweep', { folder, pages, listed, total }, started);
   }
   async function drainThreads() {
     for (const [id, nextRetry] of pendingThreads) {
@@ -283,6 +400,8 @@
       await loadFailures();
       await drainThreads();
       if (!initialComplete || Date.now() - lastSweep >= 15 * 60 * 1000) {
+        // Every OWA request triggers a poll; after a failure, wait instead of re-sweeping each time.
+        if (Date.now() < sweepRetryAt) return;
         await status('syncing', reason && pendingThreads.size ? reason : null, true);
         for (const folder of folders) await sweep(folder);
         for (const failure of [...failedItems.values()]) {
@@ -293,11 +412,22 @@
         }
         initialComplete = true;
         lastSweep = Date.now();
+        sweepFailures = 0;
+        sweepRetryAt = 0;
       }
       await status(reason && pendingThreads.size ? 'degraded' : 'ok', reason && pendingThreads.size ? reason : null, true);
     } catch (error) {
-      const code = ['waiting_for_auth', 'source_throttled', 'pagination_stalled', 'thread_truncated', 'invalid_thread_shape', 'invalid_find_shape', 'sync_write_failed', 'outbox_unavailable', 'source_response_error'].includes(error.message) ? error.message : 'source_read_failed';
-      await status(code === 'waiting_for_auth' ? 'waiting_for_auth' : 'degraded', code, true);
+      const code = ['waiting_for_auth', 'source_throttled', 'pagination_stalled', 'thread_truncated', 'invalid_thread_shape', 'invalid_find_shape', 'sync_write_failed', 'outbox_unavailable', 'source_response_error', 'source_http_error'].includes(error.message) ? error.message : 'source_read_failed';
+      const detailed = error.detail ? `${code}: ${error.detail}`.slice(0, 128) : code;
+      if (code !== 'waiting_for_auth') {
+        sweepFailures++;
+        sweepRetryAt = Date.now() + Math.min(15 * 60 * 1000, 60000 * 2 ** (sweepFailures - 1));
+      }
+      if (diag) {
+        try { diag({ accountId: authAccount, at: Date.now(), op: 'poll', outcome: code === 'waiting_for_auth' ? 'info' : 'error', code, message: error.detail || String(error.message || '').slice(0, 200) || null,
+          detail: code === 'waiting_for_auth' ? {} : { failures: sweepFailures, retryInSec: Math.round((sweepRetryAt - Date.now()) / 1000) } }); } catch {}
+      }
+      await status(code === 'waiting_for_auth' ? 'waiting_for_auth' : 'degraded', detailed, true);
     } finally { polling = false; }
   }
   function observe(input, init, fetchOriginal) {
@@ -345,6 +475,7 @@
   }
   function reimport() {
     revisions.clear(); bodies.clear(); failedItems.clear(); failedLoaded = false; initialComplete = false; lastSweep = 0;
+    sweepFailures = 0; sweepRetryAt = 0;
     poll();
   }
   function setEnabled(enabled) {
@@ -358,8 +489,9 @@
     }
   }
   window.__pagerOutlookRead = Object.freeze({
-    install(hooks) { emit = hooks.emit; worker = hooks.worker; },
-    observe, conversation, poll, reimport, setEnabled,
+    install(hooks) { emit = hooks.emit; worker = hooks.worker; diag = hooks.diag; },
+    observe, conversation, poll, reimport, setEnabled, probe,
+    setProbeEnabled(enabled) { probeEnabled = enabled === true; },
     hasAccount: () => !!authAccount,
   });
   setInterval(poll, 60000);

@@ -10,6 +10,7 @@
   const pending = new Map();
   const ledgers = new Map();
   const primed = new Set();
+  const lastReported = new Map();
   let running = false;
   let configuration = { captureTeams: true, teamsChatsMode: 'all', teamsChannelsMode: 'mentions', teamsMeetingsMode: 'off', teamsMuteSelf: true };
 
@@ -29,6 +30,8 @@
   };
 
   const worker = (request) => chrome.runtime.sendMessage({ source: 'teams', ...request });
+  const diag = (entry) => chrome.runtime.sendMessage({ type: 'pager-diag', source: 'teams', entry: { at: Date.now(), ...entry } }).catch(() => {});
+  const HEARTBEAT_MS = 10 * 60 * 1000;
   const syncKey = (account) => `revision:teams:${account}:messages`;
   async function revisions(account) {
     if (!ledgers.has(account)) {
@@ -188,15 +191,21 @@
     return String(hash >>> 0);
   }
 
-  async function scanAccount(entry) {
+  async function scanAccount(entry, progress) {
+    const started = Date.now();
+    progress.stage = 'lease';
     const elected = await worker({ type: 'pager-lease', accountId: entry.account, source: 'teams' });
     if (!elected?.elected) return;
+    const counts = { conversations: 0, chains: 0, observed: 0, captured: 0, sendFailures: 0, mentions: 0,
+      replychainDb: !!entry['replychain-manager'], sliceDb: !!entry['messaging-slice-manager'] };
     const ledger = await revisions(entry.account);
     const initial = !primed.has(entry.account);
+    progress.stage = 'conversations';
     const conversationsDb = await open(entry['conversation-manager']);
     let conversations;
     try { conversations = await readAll(conversationsDb, 'conversations'); }
     finally { conversationsDb.close(); }
+    counts.conversations = conversations.length;
     const byId = new Map(conversations.filter((conv) => conv?.id).map((conv) => [String(conv.id), conv]));
     const seen = new Set();
     let oldest = null;
@@ -209,6 +218,7 @@
       seen.add(key);
       if (message.sourceTime != null && message.sourceTime < Date.now() - RETENTION_MS) return;
       if (message.sourceTime != null) oldest = oldest === null ? message.sourceTime : Math.min(oldest, message.sourceTime);
+      counts.observed++;
       const fp = fingerprint(message);
       if (ledger[key] === fp) return;
       const notification = eligible(message, !initial && ledger[key] === undefined) ? {
@@ -216,15 +226,17 @@
         body: message.body, conversationId: message.conversationId, url: message.url,
       } : undefined;
       const event = { source: 'teams', accountId: entry.account, observedAt: Date.now(), kind: 'message', message, notification };
-      if (await send(event)) { ledger[key] = fp; changed = true; }
-      else failed = true;
+      if (await send(event)) { ledger[key] = fp; changed = true; counts.captured++; }
+      else { failed = true; counts.sendFailures++; }
     };
     if (entry['replychain-manager']) {
+      progress.stage = 'replychains';
       const db = await open(entry['replychain-manager']);
       try {
         for (const store of ['replychains', 'replychains-2']) {
           await readChains(db, store, async (chain) => {
             if (!chain?.messageMap) return;
+            counts.chains++;
             const conv = byId.get(String(chain.conversationId));
             if (!conv) return;
             for (const value of Object.values(chain.messageMap)) {
@@ -243,9 +255,11 @@
       }
     }
     if (entry['messaging-slice-manager']) {
+      progress.stage = 'mentions';
       const db = await open(entry['messaging-slice-manager']);
       try {
         const mentions = await readAll(db, 'mentions-metadata-items');
+        counts.mentions = mentions.length;
         for (const mention of mentions) {
           if (!mention?.sourceMessageId || seen.has(String(mention.sourceMessageId))) continue;
           const conv = byId.get(String(mention.sourceThreadId));
@@ -262,17 +276,33 @@
       status: { state: failed ? 'degraded' : initial ? 'syncing' : 'ok', reason: failed ? 'outbox_unavailable' : null,
         coverage: 'teams_cache', initialSyncComplete: !initial && !failed, oldestSourceTime: oldest, pending: pending.size } });
     await chrome.runtime.sendMessage({ type: 'pager-health', health: { ok: !failed, conversations: conversations.length, at: Date.now() } });
+    const now = Date.now();
+    if (initial || failed || counts.captured || now - (lastReported.get(entry.account) || 0) >= HEARTBEAT_MS) {
+      lastReported.set(entry.account, now);
+      diag({ accountId: entry.account, op: 'scan', outcome: failed ? 'error' : 'ok', code: failed ? 'outbox_unavailable' : null,
+        durationMs: now - started, detail: { ...counts, initial } });
+    }
   }
   async function tick() {
     if (running || !configuration.captureTeams) return;
     running = true;
     try {
-      const accounts = discover(await indexedDB.databases());
+      const databases = await indexedDB.databases();
+      const accounts = discover(databases);
+      if (!accounts.length && Date.now() - (lastReported.get('') || 0) >= HEARTBEAT_MS) {
+        lastReported.set('', Date.now());
+        diag({ op: 'discover', outcome: 'error', code: 'no_teams_accounts',
+          detail: { databases: databases.length, teamsDatabases: databases.filter(({ name }) => /^Teams:/.test(name || '')).length } });
+      }
       for (const account of accounts) {
-        try { await scanAccount(account); }
-        catch {
+        const progress = { stage: 'start' };
+        try { await scanAccount(account, progress); }
+        catch (error) {
+          diag({ accountId: account.account, op: 'scan', outcome: 'error', code: String(error?.message || 'scan_failed').slice(0, 128),
+            detail: { stage: progress.stage } });
           await send({ source: 'teams', accountId: account.account, observedAt: Date.now(), kind: 'status',
-            status: { state: 'degraded', reason: 'cache_read_failed', coverage: 'teams_cache', initialSyncComplete: false, pending: pending.size } });
+            status: { state: 'degraded', reason: `cache_read_failed: ${progress.stage} ${String(error?.message || '')}`.trim().slice(0, 128),
+              coverage: 'teams_cache', initialSyncComplete: false, pending: pending.size } });
         }
       }
     } finally { running = false; }

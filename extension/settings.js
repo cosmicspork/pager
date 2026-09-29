@@ -12,6 +12,7 @@ export const DEFAULTS = {
   keepActiveIntervalSec: 240,
   keepActiveMask: true,
   bridgeUrl: 'http://localhost:4500/capture',
+  debugProbe: false,
 };
 
 export const TEAMS_MATCHES = ['https://teams.microsoft.com/*', 'https://*.teams.microsoft.com/*', 'https://teams.cloud.microsoft/*'];
@@ -68,6 +69,7 @@ export function normalize(raw) {
     keepActiveIntervalSec: Number.isFinite(interval) ? Math.min(INTERVAL_MAX_SEC, Math.max(INTERVAL_MIN_SEC, Math.round(interval))) : DEFAULTS.keepActiveIntervalSec,
     keepActiveMask: !!s.keepActiveMask,
     bridgeUrl: isValidBridgeUrl(s.bridgeUrl) ? s.bridgeUrl : DEFAULTS.bridgeUrl,
+    debugProbe: !!s.debugProbe,
   };
 }
 
