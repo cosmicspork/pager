@@ -24,6 +24,8 @@
   let nextStart = 0;
   let pauseUntil = 0;
   let lastSweep = 0;
+  let sweepFailures = 0;
+  let sweepRetryAt = 0;
   let lastStatus = 0;
   let initialComplete = false;
   let reason = null;
@@ -209,12 +211,17 @@
       envelope?.Conversation?.ConversationNodes?.flatMap((node) => node.Items || []) || [];
     return { ok, code, message: envelope?.MessageText || null, ...detail, items: items.slice(0, 50).map(digest) };
   }
+  // Exchange fails the whole FindItem page with ErrorInternalServerError when
+  // AllProperties hits certain Sent Items entries, so list only what retrieve()
+  // and its fallback record read; GetItem fetches each full item.
+  const LIST_PROPERTIES = ['DateTimeSent', 'DateTimeReceived', 'DateTimeCreated', 'IsDraft', 'ConversationId',
+    'Subject', 'From', 'Sender', 'HasAttachments', 'WebClientReadFormQueryString', 'ToRecipients', 'CcRecipients'];
   function findShape(folder, offset) {
     return { __type: 'FindItemRequest:#Exchange',
       ParentFolderIds: [{ __type: 'DistinguishedFolderId:#Exchange', Id: folder }],
-      ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'AllProperties' },
-      Traversal: 'Shallow', Paging: { __type: 'IndexedPageView:#Exchange', BasePoint: 'Beginning', Offset: offset, MaxEntriesReturned: 50 },
-      FocusedViewFilter: -1, ViewFilter: 'All' };
+      ItemShape: { __type: 'ItemResponseShape:#Exchange', BaseShape: 'IdOnly',
+        AdditionalProperties: LIST_PROPERTIES.map((field) => ({ __type: 'PropertyUri:#Exchange', FieldURI: field })) },
+      Traversal: 'Shallow', Paging: { __type: 'IndexedPageView:#Exchange', BasePoint: 'Beginning', Offset: offset, MaxEntriesReturned: 50 } };
   }
   function itemShape(id) {
     return { __type: 'GetItemRequest:#Exchange',
@@ -356,6 +363,12 @@
         if (pendingThreads.size) await drainThreads();
         await retrieve(item, folder === 'sentitems', failureCount);
       }
+      // Pages come newest first; once a whole page is past retention the rest is too.
+      const expired = root.Items.length > 0 && root.Items.every((item) => {
+        const time = itemTime(item, folder === 'sentitems');
+        return time !== null && time < cutoff();
+      });
+      if (expired) break;
       const next = Number(root.IndexedPagingOffset);
       if (!root.IncludesLastItemInRange && (!Number.isSafeInteger(next) || next <= offset)) throw new Error('pagination_stalled');
       offset = next;
@@ -384,6 +397,8 @@
       await loadFailures();
       await drainThreads();
       if (!initialComplete || Date.now() - lastSweep >= 15 * 60 * 1000) {
+        // Every OWA request triggers a poll; after a failure, wait instead of re-sweeping each time.
+        if (Date.now() < sweepRetryAt) return;
         await status('syncing', reason && pendingThreads.size ? reason : null, true);
         for (const folder of folders) await sweep(folder);
         for (const failure of [...failedItems.values()]) {
@@ -394,13 +409,20 @@
         }
         initialComplete = true;
         lastSweep = Date.now();
+        sweepFailures = 0;
+        sweepRetryAt = 0;
       }
       await status(reason && pendingThreads.size ? 'degraded' : 'ok', reason && pendingThreads.size ? reason : null, true);
     } catch (error) {
       const code = ['waiting_for_auth', 'source_throttled', 'pagination_stalled', 'thread_truncated', 'invalid_thread_shape', 'invalid_find_shape', 'sync_write_failed', 'outbox_unavailable', 'source_response_error', 'source_http_error'].includes(error.message) ? error.message : 'source_read_failed';
       const detailed = error.detail ? `${code}: ${error.detail}`.slice(0, 128) : code;
+      if (code !== 'waiting_for_auth') {
+        sweepFailures++;
+        sweepRetryAt = Date.now() + Math.min(15 * 60 * 1000, 60000 * 2 ** (sweepFailures - 1));
+      }
       if (diag && code !== 'waiting_for_auth') {
-        try { diag({ accountId: authAccount, at: Date.now(), op: 'poll', outcome: 'error', code, message: error.detail || String(error.message || '').slice(0, 200) || null, detail: {} }); } catch {}
+        try { diag({ accountId: authAccount, at: Date.now(), op: 'poll', outcome: 'error', code, message: error.detail || String(error.message || '').slice(0, 200) || null,
+          detail: { failures: sweepFailures, retryInSec: Math.round((sweepRetryAt - Date.now()) / 1000) } }); } catch {}
       }
       await status(code === 'waiting_for_auth' ? 'waiting_for_auth' : 'degraded', detailed, true);
     } finally { polling = false; }
@@ -450,6 +472,7 @@
   }
   function reimport() {
     revisions.clear(); bodies.clear(); failedItems.clear(); failedLoaded = false; initialComplete = false; lastSweep = 0;
+    sweepFailures = 0; sweepRetryAt = 0;
     poll();
   }
   function setEnabled(enabled) {
