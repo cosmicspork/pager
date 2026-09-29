@@ -8,7 +8,8 @@ const wrapperCode = await readFile(new URL('../main-capture.js', import.meta.url
 const clockStart = Date.now();
 const dateString = new Date(clockStart).toISOString();
 
-async function fixture({ failFirst = false, failThreadFirst = false, secondMailbox = false, preAuthFrame = false, stalled = false, throttle = false, sentError = false, oldSent = false } = {}) {
+async function fixture({ failFirst = false, failThreadFirst = false, secondMailbox = false, preAuthFrame = false, stalled = false, throttle = false, sentError = false, oldSent = false, refreshDuringSweep = false } = {}) {
+  let refreshes = 0;
   const events = [];
   const diags = [];
   const requests = [];
@@ -58,6 +59,7 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
     }
     if (action === 'GetItem') {
       const id = requests.at(-1).body.Body.ItemIds[0].Id;
+
       if ((failFirst && id === 'mail-2' || failThreadFirst && id === 'thread-only') && getFailures++ === 0) return Response.json({}, { status: 500 });
       return success({ Items: [{ ...item(id), Body: { BodyType: 'Text', Value: id === 'mail-2' ? 'Retry succeeded' : 'Tangerine message body', IsTruncated: false } }] });
     }
@@ -89,7 +91,15 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
     TextDecoder, TextEncoder, JSON, Math, Map, Set, Promise, Number, String, Array, Object, Boolean,
     location: { host: 'outlook.office.com', origin: 'https://outlook.office.com', pathname: '/mail/' },
     crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++nextUuid).padStart(12, '0')}` },
-    setTimeout(fn, ms) { if (ms < 5000) queueMicrotask(fn); return 0; },
+    setTimeout(fn, ms) {
+      // The adapter's one-second pacing wait is where OWA's own requests land.
+      if (refreshDuringSweep && ms >= 500 && ms < 5000) {
+        window.fetch('https://outlook.office.com/owa/service.svc?action=GetItem', { method: 'POST',
+          headers: { authorization: 'Bearer refreshed-' + refreshes++, 'x-anchormailbox': 'owner@example.invalid', 'x-tenantid': 'tenant' }, body: '{}' });
+      }
+      if (ms < 5000) queueMicrotask(fn);
+      return 0;
+    },
     setInterval() {}, console,
   };
   vm.createContext(sandbox);
@@ -240,4 +250,13 @@ test('sweep stops paging once a whole page is past retention', async () => {
   assert.equal(sentLists.length, 1);
   assert.ok(cap.events.some((event) => event.kind === 'status' && event.status.initialSyncComplete));
   assert.ok(!cap.requests.some((request) => request.action === 'GetItem' && request.body.Body.ItemIds[0].Id.startsWith('old-')));
+});
+
+test('OWA requests during a sweep refresh auth without restarting it', async () => {
+  const cap = await fixture({ refreshDuringSweep: true });
+  const lists = cap.requests.filter((request) => request.action === 'FindItem');
+  assert.deepEqual(lists.map((request) => request.body.Body.ParentFolderIds[0].Id), ['inbox', 'inbox', 'sentitems']);
+  assert.ok(!cap.diags.some((entry) => entry.code === 'waiting_for_auth'));
+  assert.ok(cap.events.some((event) => event.kind === 'status' && event.status.initialSyncComplete));
+  assert.match(cap.requests.at(-1).headers.authorization, /^Bearer refreshed-/, 'uses the newest template');
 });

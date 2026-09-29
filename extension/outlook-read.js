@@ -137,11 +137,14 @@
   }
   async function exchange(action, body, allowed = ACTIONS) {
     if (!allowed.has(action)) throw new Error('invalid_action');
-    const template = templates.get(authAccount);
-    if (!template) throw new Error('waiting_for_auth');
+    const account = authAccount;
+    if (!templates.has(account)) throw new Error('waiting_for_auth');
     const wait = Math.max(nextStart, pauseUntil) - Date.now();
     if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    if (templates.get(authAccount) !== template) throw new Error('waiting_for_auth');
+    // OWA refreshes the template on each of its own requests; use the newest
+    // one for the same mailbox rather than abandoning the sweep.
+    const template = templates.get(account);
+    if (!template || authAccount !== account) throw new Error('waiting_for_auth');
     nextStart = Date.now() + 1000;
     const version = action === 'GetConversationItems' ? 'V2017_08_18' : 'V2018_01_18';
     const url = new URL(`/owa/service.svc?action=${action}&app=Mail&UA=0`, location.origin);
@@ -420,9 +423,9 @@
         sweepFailures++;
         sweepRetryAt = Date.now() + Math.min(15 * 60 * 1000, 60000 * 2 ** (sweepFailures - 1));
       }
-      if (diag && code !== 'waiting_for_auth') {
-        try { diag({ accountId: authAccount, at: Date.now(), op: 'poll', outcome: 'error', code, message: error.detail || String(error.message || '').slice(0, 200) || null,
-          detail: { failures: sweepFailures, retryInSec: Math.round((sweepRetryAt - Date.now()) / 1000) } }); } catch {}
+      if (diag) {
+        try { diag({ accountId: authAccount, at: Date.now(), op: 'poll', outcome: code === 'waiting_for_auth' ? 'info' : 'error', code, message: error.detail || String(error.message || '').slice(0, 200) || null,
+          detail: code === 'waiting_for_auth' ? {} : { failures: sweepFailures, retryInSec: Math.round((sweepRetryAt - Date.now()) / 1000) } }); } catch {}
       }
       await status(code === 'waiting_for_auth' ? 'waiting_for_auth' : 'degraded', detailed, true);
     } finally { polling = false; }
