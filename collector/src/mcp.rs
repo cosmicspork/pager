@@ -15,6 +15,8 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::diagnostics;
+
 const RESPONSE_LIMIT: usize = 255 * 1024;
 const RETENTION_MS: i64 = 365 * 24 * 60 * 60 * 1000;
 const NOTICE: &str =
@@ -25,6 +27,7 @@ const OUTLOOK_SCOPE: &str = "Retained personal Inbox and Sent Items, plus observ
 
 struct McpServer {
     db_path: PathBuf,
+    diagnostics_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -56,6 +59,20 @@ struct MessageArgs {
     body_limit: Option<u32>,
     recipient_offset: Option<u32>,
     recipient_limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DiagnosticsArgs {
+    /// teams or outlook
+    source: Option<String>,
+    /// ok, error or info
+    outcome: Option<String>,
+    /// Operation name, for example FindItem, GetItem, sweep or scan
+    op: Option<String>,
+    /// RFC3339 lower bound on when the operation happened
+    since: Option<String>,
+    limit: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -221,8 +238,11 @@ fn retention_cutoff() -> i64 {
 
 #[tool_router]
 impl McpServer {
-    fn new(db_path: PathBuf) -> Self {
-        Self { db_path }
+    fn new(db_path: PathBuf, diagnostics_path: PathBuf) -> Self {
+        Self {
+            db_path,
+            diagnostics_path,
+        }
     }
 
     #[tool(
@@ -471,6 +491,72 @@ impl McpServer {
             ),
         }
     }
+
+    #[tool(
+        name = "get_source_diagnostics",
+        description = "List recent redacted capture diagnostics (source requests, response codes, counts, timings, scan errors) reported by the browser extension, newest first. Kept for 7 days.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_source_diagnostics(
+        &self,
+        Parameters(args): Parameters<DiagnosticsArgs>,
+    ) -> CallToolResult {
+        let limit = args.limit.unwrap_or(50);
+        if !(1..=200).contains(&limit) {
+            return invalid("limit must be between 1 and 200");
+        }
+        if args
+            .source
+            .as_deref()
+            .is_some_and(|s| s != "teams" && s != "outlook")
+        {
+            return invalid("source must be teams or outlook");
+        }
+        if args
+            .outcome
+            .as_deref()
+            .is_some_and(|s| !matches!(s, "ok" | "error" | "info"))
+        {
+            return invalid("outcome must be ok, error or info");
+        }
+        let since = match args
+            .since
+            .as_deref()
+            .map(|s| parse_time(s, "since"))
+            .transpose()
+        {
+            Ok(v) => v,
+            Err(e) => return invalid(e),
+        };
+        let query = diagnostics::Query {
+            source: args.source,
+            outcome: args.outcome,
+            op: args.op,
+            since,
+            limit,
+        };
+        let path = self.diagnostics_path.clone();
+        let result = tokio::task::spawn_blocking(move || diagnostics::read(&path, &query))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()));
+        match result {
+            Ok(entries) => result_call(cap_rows(
+                json!({"entries": entries, "instruction": NOTICE}),
+                "entries",
+                |_, _| json!({"truncated": true}),
+                None,
+            )),
+            Err(e) => CallToolResult::structured_error(
+                json!({"error":"query_failed","detail":e,"instruction":NOTICE}),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -554,11 +640,11 @@ fn escape_like(value: &str) -> String {
         .replace('_', "\\_")
 }
 
-pub async fn run_mcp(db_path: PathBuf) -> Result<()> {
+pub async fn run_mcp(db_path: PathBuf, diagnostics_path: PathBuf) -> Result<()> {
     // Validate before starting the protocol loop; unlike the writer this path never creates,
     // migrates, prunes, or checkpoints the database.
     open_reader(&db_path)?;
-    let service = McpServer::new(db_path)
+    let service = McpServer::new(db_path, diagnostics_path)
         .serve(stdio())
         .await
         .context("failed to start MCP stdio server")?;

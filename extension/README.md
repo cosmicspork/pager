@@ -63,6 +63,28 @@ revision ledgers and re-reads still-available source data without paging history
 there is no promise that a source still retains previously imported messages.
 A new archive ID automatically triggers that re-import.
 
+## Diagnostics
+
+Each Outlook request (except successful per-message `GetItem` calls), folder
+sweep and failed poll, and each notable Teams cache scan, is recorded as a
+redacted entry: action, folder, paging values, HTTP status, Exchange response
+code and message, returned/total counts, whether OWA's service worker handled
+the request, timing, and for Teams the store counts and failing stage. Entries
+never include headers, tokens, subjects, bodies or addresses. The options page
+lists the last 500 with **Copy diagnostics**, and they are forwarded best effort
+to the collector's `/diagnostics` endpoint (separate from the capture outbox),
+where agents read them with the `get_source_diagnostics` MCP tool. Status
+reasons also name the failing step, for example
+`source_response_error: FindItem/sentitems ErrorInternalServerError`.
+
+**Console debug probe** (options, off by default) adds `__pagerDebug` to open
+Outlook tabs. `await __pagerDebug.probe('FindItem', body)` sends one read-only
+request (`FindItem`, `GetItem`, `GetConversationItems`, `FindFolder`,
+`GetFolder`, `FindConversation`) with the tab's existing sign-in and returns the
+response code, counts and per-item ids and dates, never headers or content.
+`await __pagerDebug.diagnostics()` returns the log. Any script running in the
+Outlook page can call these while enabled, so turn it off when done.
+
 ## Paging and activity
 
 The popup has independent **Phone notifications** and **Keep Teams active**

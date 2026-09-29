@@ -9,6 +9,7 @@ import {
   effectiveSchedule,
 } from './settings.js';
 import { enqueue, getBatch, acknowledge, pending, getSync, putSync, resetLedgers, stripNotification } from './outbox.js';
+import * as diagnostics from './diagnostics.js';
 
 const COLLECTOR_URL = 'http://localhost:4501/capture';
 const ALLOWED = {
@@ -134,6 +135,7 @@ function runtimeConfig(s) {
     teamsChannelsMode: s.teamsChannelsMode,
     teamsMeetingsMode: s.teamsMeetingsMode,
     teamsMuteSelf: s.teamsMuteSelf,
+    debugProbe: s.debugProbe,
   };
 }
 
@@ -173,6 +175,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (s.captureTeams) await broadcast({ type: 'pager-control', control: 'poll' }, TEAMS_MATCHES);
   if (s.captureOutlook) await broadcast({ type: 'pager-control', control: 'poll' }, OUTLOOK_MATCHES);
   await drain();
+  await flushDiagnostics();
 });
 
 // A worker restart may happen between the source's send and its ack. The
@@ -215,6 +218,18 @@ async function installationId() {
     return id;
   })();
   return installation;
+}
+
+async function flushDiagnostics() {
+  const local = await chrome.storage.local.get(['collectorUrl', 'collectorToken']);
+  const collectorUrl = local.collectorUrl || COLLECTOR_URL;
+  if (!validLocalUrl(collectorUrl)) return;
+  await diagnostics.flush({ collectorUrl, token: local.collectorToken, installationId: await installationId() });
+}
+let flushTimer;
+function scheduleDiagnosticsFlush() {
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => { flushDiagnostics().catch(() => {}); }, 2000);
 }
 
 let draining;
@@ -305,6 +320,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await recordStatus({ collectorOk: false, collectorError: reason });
       sendResponse({ ok: false, eventId: msg.ev.eventId, error: reason });
     });
+    return true;
+  }
+  if (msg.type === 'pager-diag') {
+    if (!trustedSender(sender, msg.source)) return;
+    const entry = diagnostics.sanitize(msg.entry, msg.source);
+    if (entry) diagnostics.record(entry).then(scheduleDiagnosticsFlush).catch(() => {});
+    return;
+  }
+  if (msg.type === 'pager-diag-list') {
+    const fromExtension = sender.url?.startsWith('chrome-extension://');
+    if (!fromExtension && !trustedSender(sender, msg.source)) return;
+    settings().then(async (s) => {
+      if (!fromExtension && !s.debugProbe) return sendResponse({ ok: false, error: 'debug_disabled' });
+      const limit = Number.isSafeInteger(msg.limit) && msg.limit > 0 ? Math.min(msg.limit, 500) : 500;
+      sendResponse({ ok: true, entries: await diagnostics.list(limit) });
+    }).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  if (msg.type === 'pager-diag-clear' && sender.url?.startsWith('chrome-extension://')) {
+    diagnostics.clear().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
     return true;
   }
   if (msg.type === 'pager-health') {

@@ -17,8 +17,10 @@
         const ack = await chrome.runtime.sendMessage({ type: 'pager-event', ev });
         toPage({ control: 'ack', eventId: ev.eventId, ack });
       } catch { toPage({ control: 'ack', eventId: ev.eventId, ack: { ok: false, error: 'worker_unavailable' } }); }
+    } else if (data.__pagerDiag === true && data.entry && typeof data.entry === 'object') {
+      chrome.runtime.sendMessage({ type: 'pager-diag', source: data.source, entry: data.entry }).catch(() => {});
     } else if (data.__pagerRequest === true && /^[0-9a-f-]{36}$/i.test(data.requestId || '') &&
-               ['pager-sync-get', 'pager-sync-put', 'pager-lease'].includes(data.request?.type)) {
+               ['pager-sync-get', 'pager-sync-put', 'pager-lease', 'pager-diag-list'].includes(data.request?.type)) {
       try {
         const response = await chrome.runtime.sendMessage(data.request);
         toPage({ control: 'response', requestId: data.requestId, response });

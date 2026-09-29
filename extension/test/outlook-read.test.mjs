@@ -8,8 +8,9 @@ const wrapperCode = await readFile(new URL('../main-capture.js', import.meta.url
 const clockStart = Date.now();
 const dateString = new Date(clockStart).toISOString();
 
-async function fixture({ failFirst = false, failThreadFirst = false, secondMailbox = false, preAuthFrame = false, stalled = false, throttle = false } = {}) {
+async function fixture({ failFirst = false, failThreadFirst = false, secondMailbox = false, preAuthFrame = false, stalled = false, throttle = false, sentError = false } = {}) {
   const events = [];
+  const diags = [];
   const requests = [];
   const ledgers = new Map();
   const listeners = [];
@@ -42,6 +43,10 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
     if (action === 'FindItem') {
       const folder = requests.at(-1).body.Body.ParentFolderIds[0].Id;
       const offset = requests.at(-1).body.Body.Paging.Offset;
+      if (sentError && folder === 'sentitems') {
+        return Response.json({ Body: { ResponseMessages: { Items: [{ ResponseClass: 'Error', ResponseCode: 'ErrorInternalServerError',
+          MessageText: 'An internal server error occurred. The operation failed., Index was outside the bounds of the array.', RootFolder: null }] } } });
+      }
       const rows = folder === 'inbox' ? [item('mail-1'), item('mail-2')] : [item('mail-1')];
       return success({ RootFolder: { Items: offset === 0 ? [rows[0]] : rows.slice(1), IndexedPagingOffset: stalled ? offset : offset + 1,
         IncludesLastItemInRange: folder === 'sentitems' || offset !== 0 } });
@@ -59,6 +64,7 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
     throw new Error('unexpected action');
   };
   const window = { fetch: nativeFetch, addEventListener(_, fn) { listeners.push(fn); }, postMessage(data) {
+    if (data.__pagerDiag) diags.push(data.entry);
     if (data.__pagerEvent) {
       events.push(data.ev);
       queueMicrotask(() => listeners.forEach((fn) => fn({ source: window, origin: 'https://outlook.office.com', data: {
@@ -92,7 +98,8 @@ async function fixture({ failFirst = false, failThreadFirst = false, secondMailb
   if (secondMailbox) await auth('other@example.invalid');
   const settle = async () => { for (let n = 0; n < 100; n++) await new Promise((resolve) => setImmediate(resolve)); };
   await settle();
-  return { events, requests, ledgers, window, settle, advance(ms) { current += ms; }, adapter: window.__pagerOutlookRead };
+  const control = (message) => listeners.forEach((fn) => fn({ source: window, origin: 'https://outlook.office.com', data: { __pagerControl: true, ...message } }));
+  return { events, diags, requests, ledgers, window, settle, control, advance(ms) { current += ms; }, adapter: window.__pagerOutlookRead };
 }
 
 test('enumerates Inbox and Sent with read actions, archives full bodies and sent provenance', async () => {
@@ -147,4 +154,40 @@ test('stalled pagination and throttling never report complete coverage', async (
     assert.ok(statuses.some((event) => event.status.state === 'degraded'));
     assert.equal(statuses.at(-1).status.initialSyncComplete, false);
   }
+});
+
+test('source response errors name the action, folder and Exchange code without leaking content', async () => {
+  const cap = await fixture({ sentError: true });
+  const statuses = cap.events.filter((event) => event.kind === 'status');
+  assert.equal(statuses.at(-1).status.reason, 'source_response_error: FindItem/sentitems ErrorInternalServerError');
+  const failure = cap.diags.find((entry) => entry.op === 'FindItem' && entry.outcome === 'error');
+  assert.equal(failure.code, 'ErrorInternalServerError');
+  assert.match(failure.message, /Index was outside the bounds/);
+  assert.deepEqual([failure.detail.folder, failure.detail.shape, failure.detail.offset, failure.detail.max, failure.detail.http],
+    ['sentitems', 'AllProperties', 0, 50, 200]);
+  assert.ok(cap.diags.some((entry) => entry.op === 'sweep' && entry.detail.folder === 'inbox' && entry.detail.listed === 2));
+  assert.ok(cap.diags.some((entry) => entry.op === 'poll' && entry.outcome === 'error'));
+  assert.ok(!cap.diags.some((entry) => entry.op === 'GetItem' && entry.outcome === 'ok'), 'successful GetItem is not logged');
+  const serialized = JSON.stringify(cap.diags);
+  for (const secret of ['fixture-secret', 'session-secret', 'Synthetic subject', 'Tangerine', 'sender@example.invalid']) {
+    assert.ok(!serialized.includes(secret), secret + ' must not appear in diagnostics');
+  }
+});
+
+test('debug probe exists only while enabled and returns summaries of read actions', async () => {
+  const cap = await fixture();
+  assert.equal(cap.window.__pagerDebug, undefined);
+  await assert.rejects(cap.adapter.probe('FindItem', {}), /disabled/);
+  cap.control({ control: 'config', config: { debugProbe: true } });
+  const body = { ParentFolderIds: [{ Id: 'inbox' }], ItemShape: { BaseShape: 'IdOnly' }, Paging: { Offset: 0, MaxEntriesReturned: 5 } };
+  const result = await cap.window.__pagerDebug.probe('FindItem', body);
+  assert.equal(result.ok, true);
+  assert.equal(result.code, 'NoError');
+  assert.equal(result.folder, 'inbox');
+  assert.deepEqual(Object.keys(result.items[0]).sort(), ['hasBody', 'id', 'itemClass', 'received', 'sent']);
+  assert.ok(!JSON.stringify(result).includes('Synthetic subject') && !JSON.stringify(result).includes('fixture-secret'));
+  await assert.rejects(cap.window.__pagerDebug.probe('SendItem', {}), /invalid_action/);
+  cap.control({ control: 'config', config: { debugProbe: false } });
+  assert.equal(cap.window.__pagerDebug, undefined);
+  await assert.rejects(cap.adapter.probe('FindItem', body), /disabled/);
 });

@@ -155,3 +155,18 @@ button:focus-visible { outline: 1px solid var(--phos); outline-offset: 2px; }
 .saved.show { opacity: 1; }
 
 a { color: var(--phos-mid); }
+
+.diag-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.diag-list {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--phos-mid);
+}
+.diag-list:empty { display: none; }
+.diag-row { padding: 2px 0; border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; }
+.diag-row:last-child { border-bottom: 0; }
+.diag-row.error { color: var(--amber); }
+code { color: var(--phos-mid); }
