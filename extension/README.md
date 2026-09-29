@@ -18,7 +18,7 @@ Other clients can still send directly to the bridge.
   are marked as such; disappearance from cache is not treated as deletion.
 - **Outlook:** observes the signed-in tab's normal authentication/routing headers
   in memory, then uses read-only `FindItem`/`GetItem` requests against the
-  personal Inbox and Sent Items and `GetConversationItems` for observed threads.
+  personal Inbox, Sent Items and Archive and `GetConversationItems` for observed threads.
   It archives plain-text bodies when available and preserves sent provenance.
   An observed SignalR conversation is metadata, not a fabricated message body.
   No Graph token, attachment bytes, authentication headers or raw service

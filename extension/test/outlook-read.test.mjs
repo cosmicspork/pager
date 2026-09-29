@@ -255,7 +255,7 @@ test('sweep stops paging once a whole page is past retention', async () => {
 test('OWA requests during a sweep refresh auth without restarting it', async () => {
   const cap = await fixture({ refreshDuringSweep: true });
   const lists = cap.requests.filter((request) => request.action === 'FindItem');
-  assert.deepEqual(lists.map((request) => request.body.Body.ParentFolderIds[0].Id), ['inbox', 'inbox', 'sentitems']);
+  assert.deepEqual(lists.map((request) => request.body.Body.ParentFolderIds[0].Id), ['inbox', 'inbox', 'sentitems', 'archive', 'archive']);
   assert.ok(!cap.diags.some((entry) => entry.code === 'waiting_for_auth'));
   assert.ok(cap.events.some((event) => event.kind === 'status' && event.status.initialSyncComplete));
   assert.match(cap.requests.at(-1).headers.authorization, /^Bearer refreshed-/, 'uses the newest template');

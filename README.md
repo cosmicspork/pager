@@ -198,7 +198,7 @@ separate `diagnostics.sqlite3` next to the archive, kept for 7 days and at most
 
 Search/collection status report source coverage, import progress and stale
 heartbeats. Teams includes available cached messages, **not** complete Teams
-history. Outlook retrieves retained personal Inbox and Sent Items through
+history. Outlook retrieves retained personal Inbox, Sent Items and Archive through
 authenticated read actions in the open browser tab, plus thread context
 observed there; it does not import other folders/shared mailboxes or attachments.
 Bodies may be missing, truncated or deleted at the source. MCP responses bound

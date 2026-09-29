@@ -5,7 +5,7 @@
   const HEADERS = ['authorization', 'x-anchormailbox', 'x-tenantid', 'x-owa-sessionid', 'x-clientid',
     'x-client-version', 'owaappid', 'x-ms-appname', 'x-routingparameter-sessionkey', 'prefer'];
   const ACTIONS = new Set(['FindItem', 'GetItem', 'GetConversationItems']);
-  const folders = ['inbox', 'sentitems'];
+  const folders = ['inbox', 'sentitems', 'archive'];
   const templates = new Map();
   const anchors = new Set();
   const pendingThreads = new Map();
