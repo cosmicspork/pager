@@ -11,9 +11,6 @@ permissions:
   contents: write
   pull-requests: write
 
-concurrency:
-  group: release-${{ github.ref }}
-
 jobs:
   release-please:
     runs-on: ubuntu-24.04
