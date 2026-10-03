@@ -61,8 +61,10 @@ jobs:
           tags: |
             ghcr.io/cosmicspork/pager:${{ needs.release-please.outputs.version }}
             ghcr.io/cosmicspork/pager:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Each image keeps its own cache. Sharing the default scope meant each
+          # build overwrote the other's cache index.
+          cache-from: type=gha,scope=pager
+          cache-to: type=gha,mode=max,scope=pager
       # The bridge, for running one in the cluster as well as on a laptop.
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -73,8 +75,8 @@ jobs:
           tags: |
             ghcr.io/cosmicspork/pager-bridge:${{ needs.release-please.outputs.version }}
             ghcr.io/cosmicspork/pager-bridge:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=pager-bridge
+          cache-to: type=gha,mode=max,scope=pager-bridge
       # Each image must carry its own binary and not the other's. A mislabelled
       # image is not a build failure — it crash-loops in the cluster instead.
       - name: assert each image carries the right binary
