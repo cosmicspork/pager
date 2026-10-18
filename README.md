@@ -1,11 +1,10 @@
 # Pager
 
-A browser-resident communications archive and pager for Teams and Outlook web,
-built because Microsoft Graph is closed off by tenant policy. The Chrome
-extension captures from signed-in tabs and writes to a private local Rust/SQLite
-collector before eligible notifications reach the existing local bridge.
+A browser-resident communications archive and pager for Teams and Outlook web.
+The Chrome extension captures from signed-in tabs and writes to a private local
+Rust/SQLite collector before eligible notifications reach the local bridge.
 Agents can query the retained archive through read-only stdio MCP; phone delivery
-remains end-to-end encrypted through the bridge and hosted relay.
+is end-to-end encrypted through the bridge and a self-hosted relay.
 
 ## Architecture
 
