@@ -7,6 +7,7 @@ import {
   OUTLOOK_MATCHES,
   getSettings,
   effectiveSchedule,
+  getSound,
 } from './settings.js';
 import { enqueue, getBatch, acknowledge, pending, getSync, putSync, resetLedgers, stripNotification } from './outbox.js';
 import * as diagnostics from './diagnostics.js';
@@ -43,13 +44,20 @@ const REG_OUTLOOK_MAIN = 'pager-outlook-main';
 const REG_BRIDGE = 'pager-bridge';
 const REG_IDS = [REG_TEAMS_MAIN, REG_TEAMS_CAPTURE, REG_OUTLOOK_MAIN, REG_BRIDGE];
 
-function desiredRegistrations(s) {
-  const teamsMain = [];
-  if (['scheduled', 'always_on'].includes(s.keepActiveMode) && !s.keepActiveInvalid) {
-    teamsMain.push('keep-active-mask.js', 'keep-active.js');
-  }
+function keepActiveEnabled(s) {
+  return ['scheduled', 'always_on'].includes(s.keepActiveMode) && !s.keepActiveInvalid;
+}
 
-  const outlookMain = s.captureOutlook ? ['outlook-read.js', 'main-capture.js'] : [];
+function teamsMainScripts(s) {
+  const js = s.soundTeams ? ['sound-swap.js'] : [];
+  if (keepActiveEnabled(s)) js.push('keep-active-mask.js', 'keep-active.js');
+  return js;
+}
+
+function desiredRegistrations(s) {
+  const teamsMain = teamsMainScripts(s);
+  const outlookMain = s.soundOutlook ? ['sound-swap.js'] : [];
+  if (s.captureOutlook) outlookMain.push('outlook-read.js', 'main-capture.js');
 
   const regs = [];
   if (teamsMain.length) {
@@ -146,7 +154,7 @@ function pagingEligible(candidate, s) {
 
 async function syncAlarm() {
   const s = await settings();
-  if (['scheduled', 'always_on'].includes(s.keepActiveMode) || s.captureTeams || s.captureOutlook || (await pending()).count) {
+  if (keepActiveEnabled(s) || s.captureTeams || s.captureOutlook || s.mode === 'full' && (await pending()).count) {
     await chrome.alarms.create(ALARM_KEEPALIVE, { periodInMinutes: 1 });
   } else {
     await chrome.alarms.clear(ALARM_KEEPALIVE);
@@ -174,6 +182,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (effectiveSchedule(s).keepActive) await broadcast({ type: 'pager-control', control: 'pulse' }, TEAMS_MATCHES);
   if (s.captureTeams) await broadcast({ type: 'pager-control', control: 'poll' }, TEAMS_MATCHES);
   if (s.captureOutlook) await broadcast({ type: 'pager-control', control: 'poll' }, OUTLOOK_MATCHES);
+  if (s.mode !== 'full') return;
   await drain();
   await flushDiagnostics();
 });
@@ -191,6 +200,10 @@ function validLocalUrl(value) {
     return url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname)
       && !url.username && !url.password && !url.search && !url.hash && url.pathname === '/capture';
   } catch { return false; }
+}
+
+function senderSource(sender) {
+  return ['teams', 'outlook'].find((source) => trustedSender(sender, source)) || null;
 }
 
 function trustedSender(sender, source) {
@@ -237,6 +250,8 @@ let paused = false;
 async function drain() {
   if (draining || paused) return draining;
   draining = (async () => {
+    // Simple mode has no collector; anything still queued waits for full mode.
+    if ((await settings()).mode !== 'full') return;
     const local = await chrome.storage.local.get(['collectorUrl', 'collectorToken', 'archiveId']);
     const collectorUrl = local.collectorUrl || COLLECTOR_URL;
     if (!validLocalUrl(collectorUrl) || !local.collectorToken) {
@@ -305,6 +320,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'pager-event') {
     if (!validEvent(msg.ev, sender)) { sendResponse({ ok: false, error: 'invalid_capture', eventId: msg.ev?.eventId }); return; }
     settings().then((s) => {
+      if (s.mode !== 'full') throw new Error('capture_disabled');
       const event = structuredClone(msg.ev);
       if (event.notification && !pagingEligible(event.notification, s)) delete event.notification;
       return enqueue(event);
@@ -316,6 +332,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       drain();
       await syncAlarm();
     }).catch(async (error) => {
+      if (error.message === 'capture_disabled') return sendResponse({ ok: false, eventId: msg.ev.eventId, error: 'capture_disabled' });
       const reason = error.message === 'outbox_full' ? 'outbox_full' : 'outbox_error';
       await recordStatus({ collectorOk: false, collectorError: reason });
       sendResponse({ ok: false, eventId: msg.ev.eventId, error: reason });
@@ -373,6 +390,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     pending().then((value) => sendResponse(value));
     return true;
   }
+  if (msg.type === 'pager-sound-get') {
+    // The app is taken from the tab, not the message, so a page can only ever
+    // receive its own app's sound.
+    const source = senderSource(sender);
+    if (!source) return;
+    settings().then(async (s) => {
+      const enabled = source === 'teams' ? s.soundTeams : s.soundOutlook;
+      sendResponse({ ok: true, sound: enabled ? await getSound(source) : null });
+    }).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (msg.type === 'pager-get-config') {
     settings().then((s) => sendResponse(runtimeConfig(s)));
     return true;
@@ -383,18 +411,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // wiring
 // ---------------------------------------------------------------------------
 
-async function activateOpenTeams(s) {
-  if (!['scheduled', 'always_on'].includes(s.keepActiveMode) || s.keepActiveInvalid) return;
-  for (const tab of await chrome.tabs.query({ url: TEAMS_MATCHES })) {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['relay.js'], world: 'ISOLATED' });
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['keep-active-mask.js', 'keep-active.js'], world: 'MAIN' });
-      await chrome.tabs.sendMessage(tab.id, { type: 'pager-control', control: 'config', config: runtimeConfig(s) });
-    } catch {}
+// Keep-active and the sound swap work from any point in a page's life, so
+// turning them on reaches already-open tabs without a reload. Each script
+// guards against a second install.
+async function activateOpenTabs(s) {
+  for (const [matches, files] of [
+    [TEAMS_MATCHES, teamsMainScripts(s)],
+    [OUTLOOK_MATCHES, s.soundOutlook ? ['sound-swap.js'] : []],
+  ]) {
+    if (!files.length) continue;
+    for (const tab of await chrome.tabs.query({ url: matches })) {
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['relay.js'], world: 'ISOLATED' });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files, world: 'MAIN' });
+        await chrome.tabs.sendMessage(tab.id, { type: 'pager-control', control: 'config', config: runtimeConfig(s) });
+        await chrome.tabs.sendMessage(tab.id, { type: 'pager-control', control: 'sound' });
+      } catch {}
+    }
   }
 }
 
 chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area === 'local' && (changes.soundTeamsFile || changes.soundOutlookFile)) {
+    await broadcast({ type: 'pager-control', control: 'sound' }, [...TEAMS_MATCHES, ...OUTLOOK_MATCHES]);
+    return;
+  }
   if (area === 'local' && (changes.collectorUrl || changes.collectorToken)) {
     paused = false;
     await drain();
@@ -405,14 +446,15 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   cached = null;
   const s = await settings();
   await syncRegistrations();
-  if (changes.keepActiveMode || changes.keepActiveMask) await activateOpenTeams(s);
+  if (changes.keepActiveMode || changes.keepActiveMask || changes.soundTeams || changes.soundOutlook) await activateOpenTabs(s);
+  if (changes.soundTeams || changes.soundOutlook) await broadcast({ type: 'pager-control', control: 'sound' }, [...TEAMS_MATCHES, ...OUTLOOK_MATCHES]);
   await syncAlarm();
   // Health is a claim about a capture that is now deliberately off; left in
   // place it decays into a permanent 'stale' warning in the popup.
-  if (changes.captureTeams && changes.captureTeams.newValue === false) {
+  if (!s.captureTeams) {
     try { await chrome.storage.session.remove('teamsHealth'); } catch {}
   }
-  if (changes.captureOutlook && changes.captureOutlook.newValue === false) {
+  if (!s.captureOutlook) {
     try { await chrome.storage.session.remove('outlookHealth'); } catch {}
   }
   // Tabs already open still have the old scripts in them; tell them the new

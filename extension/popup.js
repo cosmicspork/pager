@@ -1,4 +1,4 @@
-import { getSettings, setSettings, effectiveSchedule, nextScheduleChange } from './settings.js';
+import { getSettings, setSettings, effectiveSchedule, nextScheduleChange, getSound } from './settings.js';
 
 function flash() {
   const element = document.getElementById('saved');
@@ -47,8 +47,17 @@ async function renderStatus(settings) {
   outlook.classList.toggle('warn', settings.captureOutlook && !!mail && (mail.state !== 'ok' || Date.now() - mail.at > 180000));
   document.getElementById('stLast').textContent = ago(state.lastEventAt);
 }
+async function soundText(enabled, source) {
+  if (!(await getSound(source))) return 'default';
+  return enabled ? 'custom' : 'default (custom file off)';
+}
 async function render() {
   const settings = await getSettings();
+  const full = settings.mode === 'full';
+  document.body.classList.toggle('simple', !full);
+  document.getElementById('sub').textContent = full ? 'capture, paging & Teams activity' : 'Teams activity & sounds';
+  document.getElementById('soundState').textContent =
+    `Teams: ${await soundText(settings.soundTeams, 'teams')} · Outlook: ${await soundText(settings.soundOutlook, 'outlook')}. Change in Settings.`;
   document.getElementById('captureTeams').checked = settings.captureTeams;
   document.getElementById('captureOutlook').checked = settings.captureOutlook;
   setValue('pagingMode', settings.pagingMode);
@@ -58,7 +67,7 @@ async function render() {
   const activityNext = nextScheduleChange({ ...settings, pagingMode: 'always_notify' });
   document.getElementById('pagingState').textContent = stateText(settings.pagingMode, effective.pagingAllowed, settings.pagingInvalid, pagingNext);
   document.getElementById('activityState').textContent = stateText(settings.keepActiveMode, effective.keepActive, settings.keepActiveInvalid, activityNext);
-  await renderStatus(settings);
+  if (full) await renderStatus(settings);
 }
 for (const key of ['captureTeams', 'captureOutlook']) {
   document.getElementById(key).addEventListener('change', async (event) => {

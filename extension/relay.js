@@ -20,7 +20,7 @@
     } else if (data.__pagerDiag === true && data.entry && typeof data.entry === 'object') {
       chrome.runtime.sendMessage({ type: 'pager-diag', source: data.source, entry: data.entry }).catch(() => {});
     } else if (data.__pagerRequest === true && /^[0-9a-f-]{36}$/i.test(data.requestId || '') &&
-               ['pager-sync-get', 'pager-sync-put', 'pager-lease', 'pager-diag-list'].includes(data.request?.type)) {
+               ['pager-sync-get', 'pager-sync-put', 'pager-lease', 'pager-diag-list', 'pager-sound-get'].includes(data.request?.type)) {
       try {
         const response = await chrome.runtime.sendMessage(data.request);
         toPage({ control: 'response', requestId: data.requestId, response });
@@ -31,8 +31,18 @@
     if (message?.type !== 'pager-control') return;
     if (['pulse', 'config', 'poll', 'reimport'].includes(message.control)) {
       toPage({ control: message.control, config: message.config });
+    } else if (message.control === 'sound') {
+      pushSound();
     }
   });
+  // The worker sends the sound (or null) for this tab's app; sound-swap.js
+  // ignores it when it is not installed.
+  function pushSound() {
+    chrome.runtime.sendMessage({ type: 'pager-sound-get' })
+      .then((response) => { if (response?.ok) toPage({ control: 'sound', sound: response.sound }); })
+      .catch(() => {});
+  }
+  pushSound();
   chrome.runtime.sendMessage({ type: 'pager-get-config' })
     .then((config) => { if (config) toPage({ control: 'config', config }); })
     .catch(() => {});

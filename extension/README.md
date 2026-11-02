@@ -1,6 +1,47 @@
 # Pager capture extension
 
-Chrome MV3 extension. Captures Teams/Outlook communications from signed-in tabs,
+Chrome MV3 extension with two modes, chosen at the top of **Settings**:
+
+- **Simple** (default for new installs): keeps Teams web active and can replace
+  the Teams/Outlook web notification sounds with your own file. Nothing else to
+  install, no token, no capture scripts.
+- **Full**: everything below — capture, local archive and phone paging. An
+  installation that already has a collector token starts in full mode.
+
+Switching to simple stops capture and collector delivery but keeps the
+full-mode settings; anything still queued is delivered after switching back.
+
+## Simple mode setup
+
+1. Get this `extension/` directory (clone, or unzip a copy).
+2. At `chrome://extensions`, enable Developer mode → **Load unpacked** → select it.
+   A managed browser may block Developer mode; then it needs an unlisted store
+   listing or an admin-installed build.
+3. Open the popup to choose **Keep Teams active** (Scheduled / Always on / Always
+   off); activity windows and the pulse interval are in **Settings**.
+4. For sounds, open **Settings** → *Notification sounds* → **Choose file** for
+   Teams and/or Outlook, then **Play** to check it.
+
+## Notification sounds
+
+Both apps download their sound and read it before playing: Teams fetches
+`…/evergreen-assets/audio/<name>.mp3` and plays it with an audio element; Outlook
+fetches `…/resources/sounds/notifications/newmail.mp3` (or the sound chosen in its
+settings) and plays it through Web Audio. `sound-swap.js` runs in the page and
+answers those reads with the stored file instead. Teams files whose names
+mention a ring or call are left alone, so call ringtones are unchanged.
+
+- Files must be audio the browser can play and decode, up to 1 MB each, and are
+  kept in extension local storage. Each app has its own file and on/off switch.
+- Turning a sound on or off, or replacing the file, reaches open tabs without a reload.
+- It only changes the app's own sound. Outlook plays it only for new Inbox mail
+  with its notification sound turned on; mail filed by rules makes no sound.
+- The separate sound macOS plays for a Chrome notification banner (System
+  Settings → Notifications → Google Chrome) is not something a page can replace.
+
+## Full mode
+
+Captures Teams/Outlook communications from signed-in tabs,
 queues them durably in extension-origin IndexedDB, and sends authenticated batches
 to the local Rust collector. The collector commits before attempting eligible
 phone notifications through the existing bridge. A missing collector or token
@@ -39,7 +80,7 @@ status becomes degraded rather than silently claiming a complete archive.
 2. At `chrome://extensions`, enable Developer mode → **Load unpacked** → select
    this `extension/` directory. Reload already-open Teams/Outlook tabs once
    after installation so their capture scripts are injected.
-3. Open extension **Settings**. Enter the contents of the local `ingest-token`
+3. Open extension **Settings** and set **Mode** to *Full*. Enter the contents of the local `ingest-token`
    file in the **Collector token** password input. The collector URL defaults
    to `http://localhost:4501/capture`; downstream bridge URL defaults to
    `http://localhost:4500/capture`. Both accept only credential-free loopback
