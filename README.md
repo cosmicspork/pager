@@ -24,9 +24,11 @@ relay never holds a key that can read a message or forge an enrollment.
 
 - `proto/` — shared wire contract: sealed-blob framing, relay-auth headers, and
   the device/notify JSON shapes used by the relay, bridge, and WASM.
-- `extension/` — Chrome MV3 capture extension. Persists captures to a durable
-  IndexedDB outbox and delivers them to the local collector; independent
-  local-time paging-silence and Teams-activity schedules live in popup/options.
+- `extension/` — Chrome MV3 extension. Simple mode is Teams keep-active and
+  custom Teams/Outlook notification sounds only. Full mode captures: it persists
+  captures to a durable IndexedDB outbox and delivers them to the local
+  collector; independent local-time paging-silence and Teams-activity schedules
+  live in popup/options.
 - `collector/` — local Rust ingestion server, SQLite/FTS5 archive and read-only
   stdio MCP tool server. Archive writes commit before eligible paging; it does
   not store bridge keys or participate in device encryption.

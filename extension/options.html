@@ -8,8 +8,63 @@
 </head>
 <body>
   <h1>Pager</h1>
-  <p class="sub">Chrome capture extension · settings</p>
+  <p class="sub">Chrome extension · settings</p>
 
+  <h2>Mode</h2>
+  <div class="field">
+    <label for="mode"><span class="name">What Pager does</span></label>
+    <select id="mode">
+      <option value="simple">Simple: keep Teams active and custom sounds</option>
+      <option value="full">Full: capture, archive and phone paging</option>
+    </select>
+    <span class="hint">
+      Simple needs nothing else installed. Full also needs the local collector and
+      bridge; switching back to simple stops capture but keeps your full-mode settings.
+    </span>
+  </div>
+
+  <h2>Notification sounds</h2>
+  <p class="hint">
+    Plays your own file instead of the app's message sound in Teams and Outlook web.
+    Call ringtones are not changed. Audio files up to 1 MB.
+  </p>
+  <div class="sound" data-source="teams">
+    <div class="row">
+      <label for="soundTeams">
+        <span class="name">Teams message sound</span>
+        <span class="hint" id="soundTeamsName">No file chosen.</span>
+      </label>
+      <input type="checkbox" id="soundTeams" />
+    </div>
+    <div class="sound-actions">
+      <input type="file" accept="audio/*" id="soundTeamsFile" hidden />
+      <button type="button" data-action="choose">Choose file</button>
+      <button type="button" data-action="test">Play</button>
+      <button type="button" data-action="remove">Remove</button>
+    </div>
+  </div>
+  <div class="sound" data-source="outlook">
+    <div class="row">
+      <label for="soundOutlook">
+        <span class="name">Outlook new-mail sound</span>
+        <span class="hint" id="soundOutlookName">No file chosen.</span>
+      </label>
+      <input type="checkbox" id="soundOutlook" />
+    </div>
+    <div class="sound-actions">
+      <input type="file" accept="audio/*" id="soundOutlookFile" hidden />
+      <button type="button" data-action="choose">Choose file</button>
+      <button type="button" data-action="test">Play</button>
+      <button type="button" data-action="remove">Remove</button>
+    </div>
+  </div>
+  <span class="hint" id="soundError"></span>
+  <p class="hint">
+    Outlook only plays its sound for new mail in the Inbox, with its notification
+    sound turned on in Outlook settings. Your macOS notification banner sound is separate.
+  </p>
+
+  <div data-full>
   <h2>Script injection</h2>
   <div class="row">
     <label for="captureTeams">
@@ -78,6 +133,7 @@
   <div id="pagingSilenceWindows" class="windows"></div>
   <button type="button" id="addPagingWindow">Add silence window</button>
   <span class="hint" id="pagingScheduleError"></span>
+  </div>
 
   <h2>Daily Teams activity</h2>
   <p class="hint">Local time, every day. Choose Scheduled in the popup to use these windows.</p>
@@ -108,6 +164,7 @@
     <input type="checkbox" id="keepActiveMask" />
   </div>
 
+  <div data-full>
   <h2>Local collector</h2>
   <div class="field">
     <label for="collectorUrl"><span class="name">Collector endpoint</span></label>
@@ -154,6 +211,7 @@
     <span class="hint" id="diagStatus"></span>
   </div>
   <div id="diagList" class="diag-list"></div>
+  </div>
 
   <div class="footer">
     <button id="reset">Restore defaults</button>

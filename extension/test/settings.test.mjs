@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const source = await readFile(new URL('../settings.js', import.meta.url), 'utf8');
-const { isValidBridgeUrl, normalize, parseTime, isWithinWindows, effectiveSchedule, nextScheduleChange, getSettings } = await import(
+const { isValidBridgeUrl, normalize, parseTime, isWithinWindows, effectiveSchedule, nextScheduleChange, getSettings, validSound } = await import(
   `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`,
 );
 
@@ -60,7 +60,7 @@ test('legacy presence migrates only if mode is absent; invalid explicit mode sta
     get: async () => ({ ...persisted }),
     set: async (patch) => Object.assign(persisted, patch),
     remove: async (key) => { delete persisted[key]; },
-  } } };
+  }, local: { get: async () => ({}) } } };
   assert.equal((await getSettings()).keepActiveMode, 'always_on');
   assert.equal(Object.hasOwn(persisted, 'keepActive'), false);
   persisted.keepActive = true;
@@ -85,4 +85,45 @@ test('next boundary follows real instants through DST gaps and repeated hours', 
   const second = nextScheduleChange(fall, repeated);
   assert.equal(second.getHours(), 1);
   assert.equal(second.getMinutes(), 30);
+});
+
+test('mode defaults to simple for new installs and full where a collector token exists', async () => {
+  for (const [local, expected] of [[{}, 'simple'], [{ collectorToken: 'secret' }, 'full']]) {
+    const persisted = { keepActiveMode: 'always_off' };
+    globalThis.chrome = { storage: {
+      sync: { get: async () => ({ ...persisted }), set: async (patch) => Object.assign(persisted, patch) },
+      local: { get: async () => ({ ...local }) },
+    } };
+    assert.equal((await getSettings()).mode, expected);
+    assert.equal(persisted.mode, expected);
+  }
+  const persisted = { mode: 'full', keepActiveMode: 'always_off' };
+  globalThis.chrome = { storage: {
+    sync: { get: async () => ({ ...persisted }), set: async () => assert.fail('explicit mode is not rewritten') },
+    local: { get: async () => assert.fail('explicit mode does not consult the token') },
+  } };
+  assert.equal((await getSettings()).mode, 'full');
+  delete globalThis.chrome;
+});
+
+test('simple mode masks capture and the debug probe but keeps the stored choices and sounds', () => {
+  const simple = normalize({ mode: 'simple', captureTeams: true, captureOutlook: true, debugProbe: true, soundTeams: true });
+  assert.equal(simple.captureTeams, false);
+  assert.equal(simple.captureOutlook, false);
+  assert.equal(simple.debugProbe, false);
+  assert.equal(simple.storedCaptureTeams, true);
+  assert.equal(simple.soundTeams, true);
+  const full = normalize({ mode: 'full', captureTeams: true, captureOutlook: false });
+  assert.equal(full.captureTeams, true);
+  assert.equal(full.captureOutlook, false);
+  assert.equal(normalize({ mode: 'bogus' }).mode, 'simple');
+});
+
+test('stored sounds must be small audio files', () => {
+  const sound = { name: 'ping.mp3', type: 'audio/mpeg', size: 1000, data: 'AAAA' };
+  assert.equal(validSound(sound), true);
+  assert.equal(validSound({ ...sound, type: 'text/html' }), false);
+  assert.equal(validSound({ ...sound, size: 2 * 1024 * 1024 }), false);
+  assert.equal(validSound({ ...sound, data: null }), false);
+  assert.equal(validSound(null), false);
 });

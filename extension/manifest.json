@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Pager capture",
   "version": "0.1.0",
-  "description": "Capture Teams and Outlook web message events and forward them to the local Pager bridge.",
+  "description": "Keep Teams web active and use your own Teams/Outlook notification sounds; optionally capture and page through a local Pager collector.",
   "background": { "service_worker": "background.js", "type": "module" },
   "permissions": ["storage", "scripting", "alarms"],
   "host_permissions": [

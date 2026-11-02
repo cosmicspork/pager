@@ -137,6 +137,7 @@ button {
   cursor: pointer;
 }
 button:hover { border-color: var(--phos); box-shadow: var(--glow); }
+button:disabled { opacity: 0.4; cursor: default; border-color: var(--phos-dim); box-shadow: none; }
 button:focus-visible { outline: 1px solid var(--phos); outline-offset: 2px; }
 
 .status {
@@ -170,3 +171,10 @@ a { color: var(--phos-mid); }
 .diag-row:last-child { border-bottom: 0; }
 .diag-row.error { color: var(--amber); }
 code { color: var(--phos-mid); }
+
+/* Simple mode hides everything that belongs to capture, archive and paging. */
+body.simple [data-full] { display: none; }
+
+.sound { padding: 2px 0 6px; }
+.sound-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#soundError:not(:empty) { display: block; color: var(--amber); }

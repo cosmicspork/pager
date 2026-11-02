@@ -8,8 +8,9 @@
 </head>
 <body>
   <h1>Pager</h1>
-  <p class="sub">capture, paging &amp; Teams activity</p>
+  <p class="sub" id="sub">capture, paging &amp; Teams activity</p>
 
+  <div data-full>
   <h2>Capture</h2>
   <div class="row">
     <label for="captureTeams"><span class="name">Teams</span></label>
@@ -30,6 +31,7 @@
     </select>
     <span class="hint" id="pagingState"></span>
   </div>
+  </div>
 
   <h2>Teams activity</h2>
   <div class="field">
@@ -42,7 +44,10 @@
     <span class="hint" id="activityState"></span>
   </div>
 
-  <div class="status">
+  <h2>Sounds</h2>
+  <p class="hint" id="soundState">—</p>
+
+  <div class="status" data-full>
     <div><span>collector</span><span class="val" id="stCollector">—</span></div>
     <div><span>pending</span><span class="val" id="stPending">—</span></div>
     <div><span>teams capture</span><span class="val" id="stTeams">—</span></div>

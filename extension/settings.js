@@ -1,4 +1,5 @@
 export const DEFAULTS = {
+  mode: 'simple',
   captureTeams: true,
   captureOutlook: true,
   teamsChatsMode: 'all',
@@ -13,7 +14,16 @@ export const DEFAULTS = {
   keepActiveMask: true,
   bridgeUrl: 'http://localhost:4500/capture',
   debugProbe: false,
+  soundTeams: false,
+  soundOutlook: false,
 };
+
+// Simple mode is keep-active and notification sounds only: no capture scripts,
+// no collector delivery. Full mode is the capture/archive/paging pipeline.
+export const MODES = ['simple', 'full'];
+export const SOUND_SOURCES = ['teams', 'outlook'];
+export const SOUND_MAX_BYTES = 1024 * 1024;
+export const soundKey = (source) => source === 'teams' ? 'soundTeamsFile' : 'soundOutlookFile';
 
 export const TEAMS_MATCHES = ['https://teams.microsoft.com/*', 'https://*.teams.microsoft.com/*', 'https://teams.cloud.microsoft/*'];
 export const OUTLOOK_MATCHES = ['https://outlook.office.com/*', 'https://outlook.office365.com/*', 'https://outlook.cloud.microsoft/*'];
@@ -56,8 +66,13 @@ export function normalize(raw) {
   const s = { ...DEFAULTS, ...(raw || {}) };
   const mode = (value, fallback) => CAPTURE_MODES.includes(value) ? value : fallback;
   const interval = Number(s.keepActiveIntervalSec);
+  const appMode = MODES.includes(s.mode) ? s.mode : DEFAULTS.mode;
+  const full = appMode === 'full';
   return {
-    captureTeams: !!s.captureTeams, captureOutlook: !!s.captureOutlook,
+    mode: appMode,
+    // Capture is part of full mode only; the stored choice survives a switch.
+    captureTeams: full && !!s.captureTeams, captureOutlook: full && !!s.captureOutlook,
+    storedCaptureTeams: !!s.captureTeams, storedCaptureOutlook: !!s.captureOutlook,
     teamsChatsMode: mode(s.teamsChatsMode, DEFAULTS.teamsChatsMode),
     teamsChannelsMode: mode(s.teamsChannelsMode, DEFAULTS.teamsChannelsMode),
     teamsMeetingsMode: mode(s.teamsMeetingsMode, DEFAULTS.teamsMeetingsMode),
@@ -69,7 +84,8 @@ export function normalize(raw) {
     keepActiveIntervalSec: Number.isFinite(interval) ? Math.min(INTERVAL_MAX_SEC, Math.max(INTERVAL_MIN_SEC, Math.round(interval))) : DEFAULTS.keepActiveIntervalSec,
     keepActiveMask: !!s.keepActiveMask,
     bridgeUrl: isValidBridgeUrl(s.bridgeUrl) ? s.bridgeUrl : DEFAULTS.bridgeUrl,
-    debugProbe: !!s.debugProbe,
+    debugProbe: full && !!s.debugProbe,
+    soundTeams: !!s.soundTeams, soundOutlook: !!s.soundOutlook,
   };
 }
 
@@ -97,6 +113,13 @@ export function nextScheduleChange(settings, date = new Date()) {
 
 export async function getSettings() {
   const raw = await chrome.storage.sync.get(null);
+  if (!Object.hasOwn(raw, 'mode')) {
+    // An installation that already has a collector token predates simple mode
+    // and keeps working as before; anything else starts simple.
+    const { collectorToken } = await chrome.storage.local.get('collectorToken');
+    raw.mode = collectorToken ? 'full' : 'simple';
+    await chrome.storage.sync.set({ mode: raw.mode });
+  }
   if (!Object.hasOwn(raw, 'keepActiveMode')) {
     raw.keepActiveMode = raw.keepActive === true ? 'always_on' : 'always_off';
     await chrome.storage.sync.set({ keepActiveMode: raw.keepActiveMode });
@@ -105,6 +128,7 @@ export async function getSettings() {
   return normalize(raw);
 }
 export async function setSettings(patch) {
+  if (Object.hasOwn(patch, 'mode') && !MODES.includes(patch.mode)) throw new Error('invalid mode');
   for (const [mode, values] of [['pagingMode', PAGING_MODES], ['keepActiveMode', ACTIVITY_MODES]]) {
     if (Object.hasOwn(patch, mode) && !values.includes(patch[mode])) throw new Error('invalid ' + mode);
   }
@@ -121,4 +145,24 @@ export async function getCollectorSettings() {
 export async function setCollectorSettings(patch) {
   if (Object.hasOwn(patch, 'collectorUrl') && !isValidCollectorUrl(patch.collectorUrl)) throw new Error('invalid collectorUrl');
   await chrome.storage.local.set(patch);
+}
+
+// A stored sound is the file's bytes as base64 plus enough to show and replay
+// it. Each app has its own slot in extension local storage.
+export function validSound(value) {
+  return !!value && typeof value === 'object' && typeof value.name === 'string' &&
+    typeof value.type === 'string' && /^audio\//.test(value.type) && typeof value.data === 'string' &&
+    Number.isSafeInteger(value.size) && value.size > 0 && value.size <= SOUND_MAX_BYTES;
+}
+export async function getSound(source) {
+  if (!SOUND_SOURCES.includes(source)) return null;
+  const key = soundKey(source);
+  const stored = (await chrome.storage.local.get(key))[key];
+  return validSound(stored) ? stored : null;
+}
+export async function setSound(source, sound) {
+  if (!SOUND_SOURCES.includes(source)) throw new Error('invalid sound source');
+  if (sound === null) return chrome.storage.local.remove(soundKey(source));
+  if (!validSound(sound)) throw new Error('invalid sound');
+  await chrome.storage.local.set({ [soundKey(source)]: sound });
 }

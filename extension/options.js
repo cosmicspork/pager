@@ -2,9 +2,15 @@ import {
   DEFAULTS, INTERVAL_MIN_SEC, INTERVAL_MAX_SEC,
   getSettings, setSettings, getCollectorSettings, setCollectorSettings,
   isValidBridgeUrl, isValidCollectorUrl, validWindows,
+  SOUND_MAX_BYTES, getSound, setSound,
 } from './settings.js';
 
-const BOOLS = ['captureTeams', 'captureOutlook', 'keepActiveMask', 'teamsMuteSelf', 'debugProbe'];
+const BOOLS = ['captureTeams', 'captureOutlook', 'keepActiveMask', 'teamsMuteSelf', 'debugProbe', 'soundTeams', 'soundOutlook'];
+// Capture toggles show what is stored, not the simple-mode effective value, so
+// switching modes never looks like it changed them.
+const STORED = { captureTeams: 'storedCaptureTeams', captureOutlook: 'storedCaptureOutlook' };
+const SOUND_IDS = { teams: { toggle: 'soundTeams', name: 'soundTeamsName', file: 'soundTeamsFile' },
+  outlook: { toggle: 'soundOutlook', name: 'soundOutlookName', file: 'soundOutlookFile' } };
 const MODES = ['teamsChatsMode', 'teamsChannelsMode', 'teamsMeetingsMode'];
 const WINDOWS = [
   { key: 'pagingSilenceWindows', add: 'addPagingWindow', error: 'pagingScheduleError' },
@@ -55,7 +61,9 @@ async function saveWindows(field) {
 async function render() {
   const settings = await getSettings();
   const collector = await getCollectorSettings();
-  for (const key of BOOLS) document.getElementById(key).checked = settings[key];
+  document.body.classList.toggle('simple', settings.mode !== 'full');
+  document.getElementById('mode').value = settings.mode;
+  for (const key of BOOLS) document.getElementById(key).checked = settings[STORED[key] || key];
   for (const key of MODES) document.getElementById(key).value = settings[key];
   for (const { key, error } of WINDOWS) {
     const container = document.getElementById(key);
@@ -68,7 +76,77 @@ async function render() {
   document.getElementById('collectorUrl').value = collector.collectorUrl;
   document.getElementById('collectorToken').value = collector.collectorToken;
   for (const key of [...MODES, 'teamsMuteSelf']) document.getElementById(key).disabled = !settings.captureTeams;
+  for (const [source, ids] of Object.entries(SOUND_IDS)) {
+    const sound = await getSound(source);
+    document.getElementById(ids.name).textContent = sound ? `${sound.name} · ${Math.ceil(sound.size / 1024)} KB` : 'No file chosen.';
+    document.getElementById(ids.toggle).disabled = !sound;
+    for (const button of document.querySelectorAll(`.sound[data-source="${source}"] button:not([data-action="choose"])`)) button.disabled = !sound;
+  }
 }
+
+function soundError(message) {
+  document.getElementById('soundError').textContent = message || '';
+}
+
+function toBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+// Outlook decodes with Web Audio and Teams plays through an audio element, so a
+// file has to pass both before it is kept.
+async function checkPlayable(file) {
+  const context = new AudioContext();
+  try { await context.decodeAudioData(await file.arrayBuffer()); } finally { context.close(); }
+  const url = URL.createObjectURL(file);
+  try {
+    await new Promise((resolve, reject) => {
+      const audio = new Audio();
+      audio.addEventListener('canplaythrough', resolve, { once: true });
+      audio.addEventListener('error', reject, { once: true });
+      audio.preload = 'auto';
+      audio.src = url;
+    });
+  } finally { URL.revokeObjectURL(url); }
+}
+
+let playing;
+for (const [source, ids] of Object.entries(SOUND_IDS)) {
+  const input = document.getElementById(ids.file);
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    input.value = '';
+    soundError();
+    if (!file) return;
+    if (!file.type.startsWith('audio/')) return soundError(`${file.name} is not an audio file.`);
+    if (file.size > SOUND_MAX_BYTES) return soundError(`${file.name} is larger than 1 MB.`);
+    try { await checkPlayable(file); } catch { return soundError(`${file.name} could not be played by the browser.`); }
+    await setSound(source, { name: file.name, type: file.type, size: file.size, data: toBase64(await file.arrayBuffer()) });
+    await setSettings({ [ids.toggle]: true });
+    flash(); await render();
+  });
+  const section = document.querySelector(`.sound[data-source="${source}"]`);
+  section.querySelector('[data-action="choose"]').addEventListener('click', () => input.click());
+  section.querySelector('[data-action="test"]').addEventListener('click', async () => {
+    const sound = await getSound(source);
+    if (!sound) return;
+    playing?.pause();
+    playing = new Audio(`data:${sound.type};base64,${sound.data}`);
+    playing.play().catch(() => soundError('The browser could not play that file.'));
+  });
+  section.querySelector('[data-action="remove"]').addEventListener('click', async () => {
+    await setSettings({ [ids.toggle]: false });
+    await setSound(source, null);
+    soundError(); flash(); await render();
+  });
+}
+
+document.getElementById('mode').addEventListener('change', async (event) => {
+  await setSettings({ mode: event.target.value });
+  flash(); await render();
+});
 
 for (const key of BOOLS) {
   document.getElementById(key).addEventListener('change', async (event) => {
@@ -115,7 +193,9 @@ document.getElementById('reimport').addEventListener('click', async () => {
   document.getElementById('reimportStatus').textContent = response?.ok ? 'Re-import requested in open source tabs.' : 'Re-import failed; check the collector.';
 });
 document.getElementById('reset').addEventListener('click', async () => {
-  await setSettings(DEFAULTS);
+  // Restoring defaults is about tuning; the mode and the sounds have their own controls.
+  const { mode, soundTeams, soundOutlook, ...defaults } = DEFAULTS;
+  await setSettings(defaults);
   flash(); await render();
 });
 function describe(entry) {
