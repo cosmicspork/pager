@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/cosmicspork/pager/compare/v0.7.0...v0.8.0) (2026-11-02)
+
+
+### Features
+
+* **extension:** add simple mode and custom notification sounds ([#38](https://github.com/cosmicspork/pager/issues/38)) ([81056f9](https://github.com/cosmicspork/pager/commit/81056f9138b0c82c13643977acf31574fd1e2dac))
+
 ## [0.7.0](https://github.com/cosmicspork/pager/compare/v0.6.2...v0.7.0) (2026-09-29)
 
 
